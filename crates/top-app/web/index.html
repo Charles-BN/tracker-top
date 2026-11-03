@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tracker-top</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/" } }</script>
+<script src="vendor/delaunator.min.js"></script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">tracker-top <small id="db-path" title=""></small></div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="import" aria-selected="false">Import</button>
+    <button role="tab" data-tab="results" aria-selected="false">Results</button>
+    <button role="tab" data-tab="view3d" aria-selected="false">3D view</button>
+    <button role="tab" data-tab="history" aria-selected="false">History</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+  </nav>
+  <div class="actions">
+    <button class="btn" id="btn-optimize" title="Optimise every tracker whose elevations or settings changed">Optimise <span id="stale-count" class="count-badge" hidden></span></button>
+    <a class="btn" href="api/export.xlsx" download>Export Excel</a>
+    <a class="btn" href="api/export.csv" download>CSV</a>
+  </div>
+</header>
+
+<main>
+  <section class="tab active" id="tab-overview" role="tabpanel"></section>
+
+  <section class="tab" id="tab-import" role="tabpanel">
+    <div class="grid cols-3">
+      <div class="card">
+        <div class="card-head"><h2>Daily survey report</h2></div>
+        <p class="ink2">Field survey of pile positions and real ground elevation. CSV, TXT or Excel; with or without a header row (Point, Easting, Northing, Elevation, Code). Points are matched to piles by ID, or by position when the ID is unknown.</p>
+        <div class="drop" data-kind="survey" tabindex="0" role="button" aria-label="Choose survey files" style="margin-top:12px"><b>Drop survey files here</b><br>or click to choose. Several files at once is fine.</div>
+        <div class="row-fields">
+          <label class="field"><span>Survey date</span><input type="date" id="survey-date"><small>Leave empty to read it from the file or its name.</small></label>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Master pile list</h2></div>
+        <div id="master-lock" class="lock" hidden></div>
+        <p class="ink2">The immutable core: pile ID, Easting, Northing, pile type, colour (and tracker, block, section when available). Once loaded it can never be changed; a later file can only add new piles. A ground elevation column (such as Z LIDAR) is also recorded as LIDAR ground.</p>
+        <div class="drop" data-kind="master" tabindex="0" role="button" aria-label="Choose the master pile list" style="margin-top:12px"><b>Drop the master pile list here</b><br>or click to choose.</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>LIDAR / design ground</h2><span class="muted">optional</span></div>
+        <p class="ink2">Ground elevations used for piles that have not been surveyed yet, so whole trackers can be optimised before the survey is complete. A field survey always takes precedence.</p>
+        <div class="drop" data-kind="lidar" tabindex="0" role="button" aria-label="Choose a LIDAR file" style="margin-top:12px"><b>Drop a LIDAR file here</b><br>or click to choose.</div>
+      </div>
+    </div>
+    <input type="file" id="file-input" multiple accept=".csv,.txt,.prn,.xlsx,.xlsm,.xls,.ods" hidden>
+    <div id="import-results" style="margin-top:16px"></div>
+  </section>
+
+  <section class="tab" id="tab-results" role="tabpanel">
+    <div class="filters">
+      <input type="search" id="f-search" placeholder="Search tracker or pile" aria-label="Search tracker or pile" style="min-width:220px">
+      <select id="f-block" aria-label="Block"></select>
+      <select id="f-status" aria-label="Status"></select>
+      <label class="check"><input type="checkbox" id="f-stale"> Out of date only</label>
+      <span class="muted" id="f-count"></span>
+    </div>
+    <div class="results">
+      <div class="table-wrap"><table id="tracker-table"></table></div>
+      <div class="card detail" id="tracker-detail"><p class="muted">Select a tracker to see its profile and piles.</p></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-view3d" role="tabpanel">
+    <aside class="v3-side">
+      <h3 style="margin-bottom:14px">3D view</h3>
+      <label class="field"><span>Colour piles by</span>
+        <select id="v3-color">
+          <option value="status">Tracker status</option>
+          <option value="angle">Angle change at pile</option>
+          <option value="reveal">Reveal</option>
+          <option value="cutfill">Cut / fill</option>
+          <option value="source">Elevation source</option>
+          <option value="type">Pile type</option>
+          <option value="pilecolor">Pile colour (master list)</option>
+        </select>
+      </label>
+      <label class="field"><span>Ground mesh</span>
+        <select id="v3-ground">
+          <option value="elevation">Ground elevation</option>
+          <option value="cutfill">Cut / fill</option>
+          <option value="none">Hidden</option>
+        </select>
+      </label>
+      <label class="check" style="margin-bottom:14px"><input type="checkbox" id="v3-wire"> Mesh edges</label>
+      <label class="field"><span>Vertical exaggeration: <b id="v3-ex-label">3×</b></span>
+        <input type="range" id="v3-ex" min="1" max="20" step="1" value="3">
+      </label>
+      <label class="field"><span>Block</span><select id="v3-block"></select></label>
+      <label class="field"><span>Go to tracker</span>
+        <input type="search" id="v3-find" list="v3-trackers" placeholder="Tracker ID">
+        <datalist id="v3-trackers"></datalist>
+      </label>
+      <button class="btn" id="v3-fit" style="width:100%">Fit view</button>
+      <p class="muted" style="margin-top:14px;font-size:12.5px">Drag to rotate, right-drag to pan, scroll to zoom. Click a pile for its details.</p>
+    </aside>
+    <div class="v3-main" id="v3-main">
+      <div class="v3-legend" id="v3-legend"></div>
+      <div class="v3-info" id="v3-info" hidden></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-history" role="tabpanel">
+    <div class="card-head"><h2>Import history</h2><span class="muted">Imports are never deleted. Voiding a survey stops its elevations being used and re-optimises the trackers it touched.</span></div>
+    <div class="table-wrap"><table id="imports-table"></table></div>
+  </section>
+
+  <section class="tab" id="tab-settings" role="tabpanel">
+    <form id="settings-form" class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Tracker &amp; reveal</h2><span class="muted">Changing these re-optimises every tracker.</span></div>
+        <div class="settings-grid" id="settings-opt"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Survey matching</h2><span class="muted">How survey points are matched to piles and checked.</span></div>
+        <div class="settings-grid" id="settings-match"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Watch folder</h2><span class="muted">Automatic import, for example from Trimble Connect Sync.</span></div>
+        <label class="field"><span>Folder on this computer</span>
+          <input type="text" id="watch-folder" placeholder="C:\Users\me\Trimble Connect\Project\Survey" style="width:100%">
+          <small>Every new CSV / TXT / Excel file that appears in this folder (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Leave empty to turn it off.</small>
+        </label>
+        <div id="watch-status" style="margin-top:12px"></div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn primary" type="submit">Save settings</button>
+        <button class="btn" type="button" id="settings-defaults">Restore defaults</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<dialog id="dialog"><div id="dialog-body"></div><div class="dialog-actions" id="dialog-actions"></div></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

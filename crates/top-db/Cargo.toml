@@ -1,0 +1,16 @@
+[package]
+name = "top-db"
+description = "Master pile database: immutable pile list, survey history, optimisation runs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+top-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rusqlite = { version = "0.41", features = ["bundled"] }
+calamine = "0.38"
+rust_xlsxwriter = "0.102"
+sha2 = "0.11"

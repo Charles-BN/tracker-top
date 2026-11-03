@@ -1,3 +1,6 @@
 /target
 *.xlsx
 !testdata/*.xlsx
+*.db
+*.db-wal
+*.db-shm

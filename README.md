@@ -1,26 +1,121 @@
 # tracker-top
 
-Pile top-of-pile (ToP) height optimisation for single-axis solar trackers. A Rust port of
-`SLSQP_ToP.py`, built to be fast, shareable as a single executable, and reusable on other projects.
+Pile top-of-pile (ToP) height optimisation for single-axis solar trackers, with a master pile
+database, daily survey import and a 3D view. A Rust port of `SLSQP_ToP.py`, built to be fast,
+shareable as a single executable, and reusable on other projects.
 
-Given the LIDAR ground elevation at every pile, it picks the ToP height of each pile so that the
-tracker follows the terrain as closely as possible while keeping
+Two programs:
 
-- the angle change between two consecutive spans below the limit (default 0.70 deg; the NX Horizon XTR limit is 0.75 deg),
-- the reveal inside its window (default 1.20 to 1.60 m around a 1.45 m nominal),
-- cut/fill only where the first two cannot otherwise be met.
+- **`tracker-top`**: the application. One executable that opens a web page in your browser
+  (it runs on your computer, nothing goes online). Import files, read results, view the site in
+  3D, export to Excel.
+- **`top`**: the original command-line optimiser (CSV in, CSV out), unchanged.
 
-## Usage
+## Getting it
+
+- **Download**: every push builds Windows, macOS and Linux versions. Open the repository's
+  *Actions* tab, choose the latest *build* run and download `tracker-top-windows-x64` (or the
+  macOS/Linux one) from *Artifacts*. Tags such as `v0.2.0` also publish them as a release.
+  Windows may warn that the program is unsigned: *More info* → *Run anyway*.
+- **Build it yourself** (needs [Rust](https://rustup.rs)):
+
+  ```
+  cargo build --release
+  ./target/release/tracker-top          # the application
+  ./target/release/top --help           # the command-line optimiser
+  ```
+
+## Using the application
+
+Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the current folder
+(use `--db <file>` to choose another; one database per project) and opens
+<http://127.0.0.1:8770/>. Keep its window open while you work.
+
+1. **Import → Master pile list**, once. Columns: pile ID, Easting, Northing, pile type, colour,
+   and tracker, block, section when available (without a Tracker column, the tracker is the pile
+   ID without its last part: `P01.02.01.05` → `P01.02.01`).
+2. **Import → LIDAR / design ground** (optional): elevations used for piles that have not been
+   surveyed yet. A master list with a `Z LIDAR` column loads it at the same time.
+3. **Import → Daily survey report**, every day, or set a **watch folder** (below).
+4. Trackers are **optimised automatically** after each import, as soon as every pile of a
+   tracker has an elevation. Only trackers whose elevations changed are recomputed.
+5. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
+   **History** of imports, and **Export Excel** (sheets *Piles*, *Trackers*, *Imports*,
+   *Settings*) or CSV.
+
+Tabs: *Overview* (progress by block), *Import*, *Results*, *3D view*, *History*, *Settings*
+(reveal window, angle limit, survey-matching tolerances, watch folder).
+
+### The master database
+
+One SQLite file holds everything:
+
+| Part | Rule |
+|---|---|
+| **Piles** (the core: ID, tracker, block, section, Easting, Northing, type, colour) | Immutable. A later master list may only *add* new pile IDs; a file that changes an existing pile is refused whole. Enforced by database triggers, not just by the app. |
+| **Imports** (every file, with its report) | Never deleted. A survey or LIDAR import can be *voided* (with a reason); its elevations stop being used and affected trackers are re-optimised. |
+| **Elevations** (ground Z per pile per import) | Append-only. In use: the latest field survey of the pile, else its LIDAR value. |
+| **Runs** (optimisation results) | Append-only. A tracker's current result is its latest run; results older than the current elevations or settings are flagged *out of date*. |
+
+The same file imported twice is refused (it is recognised by content, not by name).
+
+### Survey files
+
+CSV, TXT, Excel (`.xlsx`, `.xls`, `.ods`), with or without a header row:
+
+- Headers are recognised in English and French (`Point`/`Nom`, `Easting`/`X`/`Est`,
+  `Northing`/`Y`/`Nord`, `Elevation`/`Z`/`Altitude`/`TN`, `Code`, `Date`…).
+- Without a header, columns are read as Point, Easting, Northing, Elevation, Code (PENZD, the
+  usual survey-controller export).
+- `,` `;` tab or space separators; decimal comma or point; UTF-8 or Windows-1252.
+- Survey date: the one entered on the Import page, else a Date column, else the file name
+  (`2026-11-03`, `20261103`, `03.11.2026`…), else the import day.
+
+Each point is matched to a pile by ID (case-insensitive), or by position (nearest pile within
+0.5 m) when the ID is unknown. Points more than 1 m from their pile's design position are
+rejected (wrong ID), more than 0.10 m are flagged, and an elevation that changed by more than
+0.30 m since the previous survey is flagged. Control points and other non-pile points are
+skipped and listed in the import report. A file whose elevation column is `Z LIDAR` is refused
+as a survey. All tolerances are in Settings.
+
+### Watch folder and Trimble Connect
+
+`tracker-top` can import survey files automatically: in **Settings → Watch folder** (or with
+`--watch <folder>`), give a folder on the computer. Every 30 s it imports each new CSV/TXT/Excel
+file found there or in its subfolders as a field survey, then re-optimises. Files already
+imported are skipped; files still being written wait for the next scan; results appear in
+Settings and on the Overview.
+
+To gather surveys from **Trimble Connect** with no programming, install **Trimble Connect Sync**
+(or Trimble Connect for Windows) on the computer running `tracker-top`, sync the project folder
+where the surveyors upload their daily reports, and point the watch folder at the local copy.
+
+A direct connection to the Trimble Connect REST API (OAuth sign-in, polling a project folder)
+is also possible and would remove the sync client, but needs an application registered with
+Trimble; see *Not done yet*.
+
+### 3D view
+
+Ground mesh triangulated through the pile ground elevations (coloured by elevation or by
+cut/fill), each pile drawn from its ground to its top, each tracker as a line through its pile
+tops. Colour piles by tracker status, angle change, reveal, cut/fill, elevation source, pile
+type or pile colour; adjustable vertical exaggeration; filter by block; go to a tracker; click a
+pile for its details. Click legend entries to hide or show a category.
+
+### Options
 
 ```
-cargo build --release
+tracker-top [--db file] [--port 8770] [--host 127.0.0.1] [--watch folder]
+            [--watch-interval 30] [--threads N] [--no-browser]
+```
+
+`--host 0.0.0.0` lets colleagues on the same network open it at `http://<your-computer>:8770/`.
+There is no password: use it only on a trusted network.
+
+## Command-line optimiser
+
+```
 ./target/release/top optimize -i piles.csv -o results.csv [--block 1] [--max-angle 0.70] [--threads N]
-./target/release/top --help
-```
-
-Try it on the bundled sample (synthetic terrain over real pile positions):
-
-```
 ./target/release/top optimize -i testdata/sample_block01_synthetic.csv -o /tmp/out.csv
 ```
 
@@ -29,7 +124,14 @@ Output columns follow the Python script (`NEW_ZG, CF, Optimized ToP, Final Revea
 plus `Status` per tracker: `Compliant`, `Graded` (needs cut/fill), `NonCompliant`, `Skipped` (< 3 piles), `InvalidInput`.
 Exit code 3 means some trackers could not be made compliant.
 
-## How it works
+## How the optimisation works
+
+It picks the ToP height of each pile so that the tracker follows the terrain as closely as
+possible while keeping
+
+- the angle change between two consecutive spans below the limit (default 0.70 deg; the NX Horizon XTR limit is 0.75 deg),
+- the reveal inside its window (default 1.20 to 1.60 m around a 1.45 m nominal),
+- cut/fill only where the first two cannot otherwise be met.
 
 Per tracker, a convex QP in the ToP heights `y` and cut/fill `c`:
 
@@ -44,28 +146,36 @@ limit (atan is 1-Lipschitz), so results are never optimistic. True angles are re
 every solve. Cut/fill carries a large penalty, which replaces the old iterative +/-0.1 m grading loop.
 
 The solver is a small dense OSQP-style ADMM (`qp.rs`) behind the `QpSolver` trait, so `clarabel` or another
-solver can be dropped in. The crates have no external dependencies.
+solver can be dropped in. `top-core` has no external dependencies.
 
 ## Layout
 
 ```
 crates/top-core   model, params, QP solver, optimiser, CSV I/O (library, std only)
 crates/top-cli    `top` command-line tool (multi-threaded with std::thread::scope)
+crates/top-db     master database (SQLite): import, matching, runs, Excel/CSV export
+crates/top-app    `tracker-top`: local web server (axum) + web page (web/, built into the exe)
+                  3D with three.js r170 and delaunator, bundled in web/vendor (MIT / ISC)
 testdata/         small synthetic sample
 ```
 
 ## Verification done
 
-- 17 unit tests (solver on analytic problems, flat/sloped/dipped terrain, randomised trackers, parallel == serial) and 2 CLI tests.
-- Full run on 36,913 piles / 2,792 trackers (synthetic terrain over real geometry): 0.2 s on 2 cores; independent
-  recheck of angles, reveal and cut/fill in Python found 0 violations.
-- Against SciPy SLSQP (original formulation) on 150 trackers needing no grading: ToP heights agree to a median
-  of 0.05 mm, max 0.22 mm.
+- 36 automated tests: 17 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+  trackers, parallel == serial), 2 CLI, 17 database (file formats and header spellings, immutability
+  triggers, duplicate files, ID and position matching, offset and jump checks, voiding, incremental
+  re-runs, settings changes, exports).
+- Optimiser, full run on 36,913 piles / 2,792 trackers (synthetic terrain over real geometry): 0.2 s on
+  2 cores; independent recheck of angles, reveal and cut/fill in Python found 0 violations. Against SciPy
+  SLSQP on 150 trackers needing no grading: ToP heights agree to a median of 0.05 mm, max 0.22 mm.
+- Application, end to end on the sample (master list, headerless survey export, French `;`-CSV survey via
+  the watch folder, LIDAR, voiding) and at 37,083 piles / 2,914 trackers: master import 0.24 s, LIDAR import
+  + optimisation of every tracker 0.56 s, page data 0.3 s, Excel export 1.2 s, 3D view ready in < 1 s
+  (4 cores, headless browser).
 
 ## Not done yet
 
-- Excel input/output (`calamine`, `rust_xlsxwriter`): needs crates.io, which was not reachable when this was started.
-  Until then, export the sheet to CSV.
+- Direct Trimble Connect API connection (use Trimble Connect Sync + the watch folder meanwhile).
 - Pile-type logic (`pile_name` in the Python script: HMP-31/SMP-31 above 6 % ground slope, minimum embedment).
-- 3D viewer (Bevy + egui) and the 2D profile viewer.
-- Validation on real LIDAR data: `Piles_MUS_meanwidth_v1_0910.xlsx` has no `Z LIDAR` column.
+- Piles already installed: hold their measured ToP fixed when re-optimising a tracker.
+- Validation on real LIDAR and survey data: `Piles_MUS_meanwidth_v1_0910.xlsx` has no `Z LIDAR` column.
