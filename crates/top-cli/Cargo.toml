@@ -1,0 +1,13 @@
+[package]
+name = "top-cli"
+description = "Command-line runner for top-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "top"
+path = "src/main.rs"
+
+[dependencies]
+top-core = { path = "../top-core" }

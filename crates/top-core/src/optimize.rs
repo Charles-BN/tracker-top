@@ -1,0 +1,473 @@
+//! Per-tracker top-of-pile (ToP) optimisation.
+//!
+//! For each tracker with piles `i = 0..n` at chainage `s_i` and LIDAR ground
+//! `z_i`, we choose ToP heights `y_i` and cut/fill amounts `c_i` to
+//!
+//! ```text
+//! minimise   sum (y_i - c_i - z_i - reveal_nominal)^2  +  lambda * sum c_i^2
+//! subject to reveal_min <= y_i - z_i - c_i <= reveal_max          (reveal window)
+//!            |c_i| <= max_cut_fill
+//!            |slope_i - slope_{i-1}| <= max_angle (radians)        (tracker limit)
+//! ```
+//!
+//! where `slope_i = (y_{i+1} - y_i) / (s_{i+1} - s_i)`. This is a convex QP.
+//!
+//! The angle limit is imposed on the slope *difference*. Since `atan` is
+//! 1-Lipschitz, `|atan(a) - atan(b)| <= |a - b|`, so any solution satisfying
+//! the linear constraint also satisfies the true angle limit used by the
+//! Python script (`atan2` differences). The linearisation is therefore slightly
+//! conservative (well under 1% for slopes up to 10%), never optimistic. The
+//! true angles are recomputed and checked after every solve.
+//!
+//! Replacing the old iterative +/-0.1 m grading loop, cut/fill is a variable
+//! with a large penalty `lambda`, so it is used only where the reveal window
+//! and angle limit cannot otherwise be met.
+
+use crate::model::Tracker;
+use crate::params::Params;
+use crate::qp::{AdmmSolver, Qp, QpSolver, QpStatus};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackerStatus {
+    /// Follows the ground with no meaningful cut/fill and respects all limits.
+    Compliant,
+    /// Respects all limits but needs cut/fill above `Params::grading_threshold`.
+    Graded,
+    /// The solver could not find a result that respects all limits.
+    NonCompliant,
+    /// Fewer than 3 piles: nothing to optimise, ToP = ground + nominal reveal.
+    Skipped,
+    /// Non-finite coordinates, or two piles at the same position.
+    InvalidInput,
+}
+
+impl TrackerStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrackerStatus::Compliant => "Compliant",
+            TrackerStatus::Graded => "Graded",
+            TrackerStatus::NonCompliant => "NonCompliant",
+            TrackerStatus::Skipped => "Skipped",
+            TrackerStatus::InvalidInput => "InvalidInput",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PileResult {
+    /// Optimised top-of-pile elevation (m).
+    pub top: f64,
+    /// Cut (negative) / fill (positive) applied to the ground (m).
+    pub cut_fill: f64,
+    /// Ground elevation after cut/fill: `z_lidar + cut_fill`.
+    pub new_ground: f64,
+    /// `top - new_ground`.
+    pub final_reveal: f64,
+    /// Angle change at this pile between the two adjacent spans (deg); 0 at the ends.
+    pub angle_diff_deg: f64,
+    /// LIDAR elevation is an outlier within its tracker.
+    pub lidar_outlier: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrackerResult {
+    pub status: TrackerStatus,
+    /// Aligned with `Tracker::piles`.
+    pub piles: Vec<PileResult>,
+    /// Largest |angle change| over the tracker (deg).
+    pub max_angle_deg: f64,
+    /// Largest |cut/fill| over the tracker (m).
+    pub max_cut_fill: f64,
+    pub qp_iterations: usize,
+}
+
+/// Angle change (deg) at each pile between the incoming and outgoing span of a
+/// profile `(s, y)`. Same definition as the Python script: difference of the
+/// `atan2` angles of consecutive spans. First and last entries are 0.
+pub fn angle_diffs_deg(s: &[f64], y: &[f64]) -> Vec<f64> {
+    let n = y.len();
+    let mut out = vec![0.0; n];
+    for i in 1..n.saturating_sub(1) {
+        let a1 = (y[i] - y[i - 1]).atan2(s[i] - s[i - 1]);
+        let a2 = (y[i + 1] - y[i]).atan2(s[i + 1] - s[i]);
+        out[i] = (a2 - a1).to_degrees();
+    }
+    out
+}
+
+fn outlier_flags(z: &[f64], alpha: f64) -> Vec<bool> {
+    let n = z.len();
+    if n < 2 {
+        return vec![false; n];
+    }
+    let mean = z.iter().sum::<f64>() / n as f64;
+    let var = z.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+    let sd = var.sqrt();
+    z.iter().map(|v| (v - mean).abs() > alpha * sd).collect()
+}
+
+fn passthrough(z: &[f64], flags: Vec<bool>, params: &Params, status: TrackerStatus) -> TrackerResult {
+    let piles = z
+        .iter()
+        .zip(flags)
+        .map(|(&z, lidar_outlier)| PileResult {
+            top: z + params.reveal_nominal,
+            cut_fill: 0.0,
+            new_ground: z,
+            final_reveal: params.reveal_nominal,
+            angle_diff_deg: 0.0,
+            lidar_outlier,
+        })
+        .collect();
+    TrackerResult {
+        status,
+        piles,
+        max_angle_deg: 0.0,
+        max_cut_fill: 0.0,
+        qp_iterations: 0,
+    }
+}
+
+/// Assemble the QP described in the module docs. Variables are `[y_0..y_n, c_0..c_n]`,
+/// with elevations shifted by `z_ref` for numerical conditioning.
+fn build_qp(s: &[f64], z: &[f64], z_ref: f64, params: &Params) -> Qp {
+    let n = s.len();
+    let nv = 2 * n;
+    let n_angle = n - 2;
+    let m = 2 * n + n_angle;
+
+    let lambda = params.cut_fill_penalty;
+    let mut p = vec![0.0; nv * nv];
+    let mut q = vec![0.0; nv];
+    for i in 0..n {
+        let t = z[i] - z_ref + params.reveal_nominal;
+        p[i * nv + i] = 2.0;
+        p[i * nv + (n + i)] = -2.0;
+        p[(n + i) * nv + i] = -2.0;
+        p[(n + i) * nv + (n + i)] = 2.0 + 2.0 * lambda;
+        q[i] = -2.0 * t;
+        q[n + i] = 2.0 * t;
+    }
+
+    let mut a = vec![0.0; m * nv];
+    let mut l = vec![0.0; m];
+    let mut u = vec![0.0; m];
+    let mut row = 0;
+
+    // Reveal window: y_i - c_i in [z_i + rmin, z_i + rmax].
+    for i in 0..n {
+        a[row * nv + i] = 1.0;
+        a[row * nv + n + i] = -1.0;
+        l[row] = z[i] - z_ref + params.reveal_min();
+        u[row] = z[i] - z_ref + params.reveal_max();
+        row += 1;
+    }
+
+    // Cut/fill cap.
+    for i in 0..n {
+        a[row * nv + n + i] = 1.0;
+        l[row] = -params.max_cut_fill;
+        u[row] = params.max_cut_fill;
+        row += 1;
+    }
+
+    // Angle limit on the slope difference at interior piles, with rows scaled
+    // by the mean span length so coefficients are O(1).
+    let theta = params.max_angle_deg.to_radians();
+    let h_mean = (s[n - 1] - s[0]) / (n as f64 - 1.0);
+    for i in 1..n - 1 {
+        let h0 = s[i] - s[i - 1];
+        let h1 = s[i + 1] - s[i];
+        a[row * nv + (i - 1)] = h_mean / h0;
+        a[row * nv + i] = -h_mean * (1.0 / h0 + 1.0 / h1);
+        a[row * nv + (i + 1)] = h_mean / h1;
+        l[row] = -theta * h_mean;
+        u[row] = theta * h_mean;
+        row += 1;
+    }
+    debug_assert_eq!(row, m);
+
+    Qp {
+        n: nv,
+        m,
+        p,
+        q,
+        a,
+        l,
+        u,
+    }
+}
+
+/// Optimise one tracker with the given solver.
+pub fn optimize_tracker(tracker: &Tracker, params: &Params, solver: &dyn QpSolver) -> TrackerResult {
+    let n = tracker.piles.len();
+    let z: Vec<f64> = tracker.piles.iter().map(|p| p.z_lidar).collect();
+    let flags = outlier_flags(&z, params.lidar_sigma_alpha);
+
+    if n < 3 {
+        return passthrough(&z, flags, params, TrackerStatus::Skipped);
+    }
+
+    let s = tracker.chainage();
+    let finite = z.iter().chain(&s).all(|v| v.is_finite());
+    let distinct = s.windows(2).all(|w| w[1] - w[0] > 1e-6);
+    if !finite || !distinct {
+        return passthrough(&z, flags, params, TrackerStatus::InvalidInput);
+    }
+
+    let z_ref = z.iter().sum::<f64>() / n as f64;
+    let qp = build_qp(&s, &z, z_ref, params);
+    let sol = solver.solve(&qp);
+
+    let top: Vec<f64> = (0..n).map(|i| sol.x[i] + z_ref).collect();
+    let cf: Vec<f64> = (0..n).map(|i| sol.x[n + i]).collect();
+    let angles = angle_diffs_deg(&s, &top);
+
+    let max_angle = angles.iter().fold(0.0_f64, |m, a| m.max(a.abs()));
+    let max_cf = cf.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+
+    let piles: Vec<PileResult> = (0..n)
+        .map(|i| PileResult {
+            top: top[i],
+            cut_fill: cf[i],
+            new_ground: z[i] + cf[i],
+            final_reveal: top[i] - (z[i] + cf[i]),
+            angle_diff_deg: angles[i],
+            lidar_outlier: flags[i],
+        })
+        .collect();
+
+    // Independent check of the true (non-linearised) limits.
+    const REVEAL_TOL: f64 = 1e-4;
+    let reveal_ok = piles.iter().all(|p| {
+        p.final_reveal >= params.reveal_min() - REVEAL_TOL
+            && p.final_reveal <= params.reveal_max() + REVEAL_TOL
+    });
+    let compliant = sol.status == QpStatus::Solved
+        && max_angle <= params.max_angle_deg + params.angle_tolerance_deg
+        && reveal_ok
+        && max_cf <= params.max_cut_fill + REVEAL_TOL;
+
+    let status = if !compliant {
+        TrackerStatus::NonCompliant
+    } else if max_cf > params.grading_threshold {
+        TrackerStatus::Graded
+    } else {
+        TrackerStatus::Compliant
+    };
+
+    TrackerResult {
+        status,
+        piles,
+        max_angle_deg: max_angle,
+        max_cut_fill: max_cf,
+        qp_iterations: sol.iterations,
+    }
+}
+
+/// Optimise all trackers on `threads` worker threads. Results are returned in
+/// the same order as `trackers`.
+pub fn optimize_all(
+    trackers: &[Tracker],
+    params: &Params,
+    solver: &dyn QpSolver,
+    threads: usize,
+) -> Vec<TrackerResult> {
+    let threads = threads.max(1).min(trackers.len().max(1));
+    let next = AtomicUsize::new(0);
+
+    let mut slots: Vec<Option<TrackerResult>> = (0..trackers.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut local = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= trackers.len() {
+                            break;
+                        }
+                        local.push((i, optimize_tracker(&trackers[i], params, solver)));
+                    }
+                    local
+                })
+            })
+            .collect();
+        for h in handles {
+            for (i, r) in h.join().expect("worker thread panicked") {
+                slots[i] = Some(r);
+            }
+        }
+    });
+    slots.into_iter().map(|r| r.expect("every tracker is processed")).collect()
+}
+
+/// Convenience: default ADMM solver.
+pub fn default_solver() -> AdmmSolver {
+    AdmmSolver::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Pile;
+
+    fn tracker(id: &str, z: &[f64], spacing: f64) -> Tracker {
+        let piles = z
+            .iter()
+            .enumerate()
+            .map(|(i, &z)| Pile {
+                name: format!("{id}.{:02}", i + 1),
+                tracker: id.into(),
+                block: "1".into(),
+                section: "1".into(),
+                pile_type: String::new(),
+                easting: 1000.0,
+                northing: 5000.0 + spacing * i as f64,
+                z_lidar: z,
+            })
+            .collect();
+        Tracker { id: id.into(), piles }
+    }
+
+    fn check(tr: &Tracker, r: &TrackerResult, params: &Params) {
+        assert_ne!(r.status, TrackerStatus::NonCompliant, "{}: {:?}", tr.id, r.max_angle_deg);
+        assert!(r.max_angle_deg <= params.max_angle_deg + 1e-6, "angle {}", r.max_angle_deg);
+        for p in &r.piles {
+            assert!(p.final_reveal >= params.reveal_min() - 1e-4, "reveal {}", p.final_reveal);
+            assert!(p.final_reveal <= params.reveal_max() + 1e-4, "reveal {}", p.final_reveal);
+            assert!(p.cut_fill.abs() <= params.max_cut_fill + 1e-4);
+        }
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    #[test]
+    fn flat_ground_gives_nominal_reveal() {
+        let params = Params::default();
+        let tr = tracker("T", &[100.0; 15], 8.0);
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        assert_eq!(r.status, TrackerStatus::Compliant);
+        for p in &r.piles {
+            assert!((p.top - 101.45).abs() < 1e-5, "{}", p.top);
+            assert!(p.cut_fill.abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn uniform_slope_is_followed_exactly() {
+        let params = Params::default();
+        let z: Vec<f64> = (0..15).map(|i| 100.0 + 0.02 * 8.0 * i as f64).collect();
+        let tr = tracker("T", &z, 8.0);
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        assert_eq!(r.status, TrackerStatus::Compliant);
+        for (p, z) in r.piles.iter().zip(&z) {
+            assert!((p.top - (z + 1.45)).abs() < 1e-5);
+        }
+        assert!(r.max_angle_deg < 1e-4);
+    }
+
+    #[test]
+    fn small_bump_is_smoothed_within_the_reveal_window() {
+        let params = Params::default();
+        let mut z = vec![100.0; 15];
+        z[7] = 99.85; // 15 cm dip: needs smoothing but no earthworks
+        let tr = tracker("T", &z, 8.0);
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        check(&tr, &r, &params);
+        assert_eq!(r.status, TrackerStatus::Compliant, "max cf {}", r.max_cut_fill);
+        // The pile above the dip must have a larger reveal than its neighbours.
+        assert!(r.piles[7].final_reveal > r.piles[3].final_reveal);
+    }
+
+    #[test]
+    fn deep_dip_forces_grading() {
+        let params = Params::default();
+        let mut z = vec![100.0; 15];
+        z[7] = 99.3; // 70 cm dip cannot be followed by the tracker
+        let tr = tracker("T", &z, 8.0);
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        check(&tr, &r, &params);
+        assert_eq!(r.status, TrackerStatus::Graded);
+        assert!(r.piles[7].cut_fill > 0.05, "expected fill at the dip");
+    }
+
+    #[test]
+    fn uneven_spacing_is_handled() {
+        let params = Params::default();
+        let mut tr = tracker("T", &[100.0, 100.1, 100.0, 100.2, 100.1, 100.0], 8.0);
+        tr.piles[3].northing += 2.0;
+        tr.piles[4].northing += 2.5;
+        tr.piles[5].northing += 3.0;
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        check(&tr, &r, &params);
+    }
+
+    #[test]
+    fn fewer_than_three_piles_are_skipped() {
+        let tr = tracker("T", &[100.0, 100.2], 8.0);
+        let r = optimize_tracker(&tr, &Params::default(), &AdmmSolver::default());
+        assert_eq!(r.status, TrackerStatus::Skipped);
+        assert!((r.piles[1].top - 101.65).abs() < 1e-12);
+    }
+
+    #[test]
+    fn duplicate_positions_are_rejected() {
+        let mut tr = tracker("T", &[100.0, 100.0, 100.0, 100.0], 8.0);
+        tr.piles[2].northing = tr.piles[1].northing;
+        let r = optimize_tracker(&tr, &Params::default(), &AdmmSolver::default());
+        assert_eq!(r.status, TrackerStatus::InvalidInput);
+    }
+
+    #[test]
+    fn lidar_outliers_are_flagged() {
+        let mut z = vec![100.0; 15];
+        z[4] = 103.0;
+        let tr = tracker("T", &z, 8.0);
+        let r = optimize_tracker(&tr, &Params::default(), &AdmmSolver::default());
+        assert!(r.piles[4].lidar_outlier);
+        assert!(!r.piles[0].lidar_outlier);
+    }
+
+    #[test]
+    fn random_terrain_always_respects_the_limits() {
+        let params = Params::default();
+        let mut rng = Lcg(42);
+        let mut trackers = Vec::new();
+        for k in 0..300 {
+            let n = 5 + (rng.next() * 11.0) as usize; // 5..=15 piles
+            let mut z = Vec::new();
+            let mut level = 50.0 + 10.0 * rng.next();
+            let mut slope = 0.08 * (rng.next() - 0.5);
+            for _ in 0..n {
+                slope += 0.03 * (rng.next() - 0.5);
+                level += slope * 8.0;
+                let noise = 0.12 * (rng.next() - 0.5);
+                let spike = if rng.next() < 0.03 { 0.6 * (rng.next() - 0.5) } else { 0.0 };
+                z.push(level + noise + spike);
+            }
+            trackers.push(tracker(&format!("R{k:03}"), &z, 8.0));
+        }
+        let solver = AdmmSolver::default();
+        let results = optimize_all(&trackers, &params, &solver, 4);
+        assert_eq!(results.len(), trackers.len());
+        for (tr, r) in trackers.iter().zip(&results) {
+            check(tr, r, &params);
+        }
+        // Parallel run must match a serial run exactly.
+        let serial: Vec<_> = trackers.iter().map(|t| optimize_tracker(t, &params, &solver)).collect();
+        for (a, b) in results.iter().zip(&serial) {
+            assert_eq!(a.status, b.status);
+            for (pa, pb) in a.piles.iter().zip(&b.piles) {
+                assert_eq!(pa.top, pb.top);
+            }
+        }
+    }
+}
