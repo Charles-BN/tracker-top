@@ -23,7 +23,7 @@ pub mod store;
 pub mod table;
 
 pub use report::{Finding, ImportReport, Level};
-pub use settings::Settings;
+pub use settings::{FloodMode, Settings};
 pub use store::{
     ImportRow, Kind, PileResultRow, PileState, RunSummary, State, Store, Summary, TrackerState,
     sha256_hex,

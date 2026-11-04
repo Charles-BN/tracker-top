@@ -19,7 +19,7 @@ pub type Result<T> = std::result::Result<T, String>;
 type LatestRun = (i64, String, String, String, f64, f64);
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
 
 fn db(e: rusqlite::Error) -> String {
     match e {
@@ -45,6 +45,7 @@ pub enum Kind {
     Master,
     Survey,
     Lidar,
+    Flood,
 }
 
 impl Kind {
@@ -53,6 +54,7 @@ impl Kind {
             Kind::Master => "master",
             Kind::Survey => "survey",
             Kind::Lidar => "lidar",
+            Kind::Flood => "flood",
         }
     }
 
@@ -61,6 +63,7 @@ impl Kind {
             "master" => Some(Kind::Master),
             "survey" => Some(Kind::Survey),
             "lidar" => Some(Kind::Lidar),
+            "flood" => Some(Kind::Flood),
             _ => None,
         }
     }
@@ -96,6 +99,10 @@ pub struct PileResultRow {
     pub reveal: f64,
     pub angle_diff_deg: f64,
     pub outlier: bool,
+    /// Lowest allowed top the run used (flood level + clearance).
+    pub min_top: Option<f64>,
+    /// The top sits on that minimum: the pile was raised for flood.
+    pub min_top_active: bool,
 }
 
 /// Everything known about one pile right now.
@@ -109,6 +116,7 @@ pub struct PileState {
     pub northing: f64,
     pub pile_type: String,
     pub color: String,
+    pub tracker_type: String,
     /// Ground elevation in use: the latest field survey, else the latest LIDAR.
     pub z: Option<f64>,
     pub z_source: Option<Kind>,
@@ -118,6 +126,12 @@ pub struct PileState {
     pub offset_m: Option<f64>,
     /// How many field surveys measured this pile (voided ones excluded).
     pub n_surveys: u32,
+    /// Latest flood value (see `Settings::flood_mode`), and its import.
+    pub flood: Option<f64>,
+    pub flood_import_id: Option<i64>,
+    /// Flood water level and lowest allowed top, with the current ground and settings.
+    pub flood_level: Option<f64>,
+    pub min_top: Option<f64>,
     pub result: Option<PileResultRow>,
 }
 
@@ -126,6 +140,7 @@ pub struct TrackerState {
     pub tracker: String,
     pub block: String,
     pub section: String,
+    pub tracker_type: String,
     pub n_piles: usize,
     pub n_survey: usize,
     pub n_lidar: usize,
@@ -139,6 +154,9 @@ pub struct TrackerState {
     pub run_at: Option<String>,
     pub max_angle_deg: Option<f64>,
     pub max_cut_fill: Option<f64>,
+    /// Piles with a flood value, and piles raised by it in the latest result.
+    pub n_flood: usize,
+    pub n_flood_raised: usize,
     /// Index of this tracker's first pile in `State::piles`.
     pub first_pile: usize,
 }
@@ -180,6 +198,8 @@ pub struct Summary {
     pub piles_surveyed: usize,
     pub piles_lidar_only: usize,
     pub piles_no_elevation: usize,
+    pub piles_with_flood: usize,
+    pub piles_flood_raised: usize,
     pub tracker_status: BTreeMap<String, usize>,
     pub stale_trackers: usize,
     pub imports: usize,
@@ -207,6 +227,7 @@ struct MasterPile {
     northing: f64,
     pile_type: String,
     color: String,
+    tracker_type: String,
 }
 
 /// Lookup of master piles by ID and by position.
@@ -313,16 +334,32 @@ impl Store {
 
     fn init(conn: Connection, path: PathBuf) -> Result<Self> {
         conn.pragma_update(None, "foreign_keys", "ON").map_err(db)?;
-        conn.execute_batch(SCHEMA).map_err(db)?;
-        let store = Self { conn, path };
-        match store.meta("schema_version")? {
-            None => store.set_meta("schema_version", SCHEMA_VERSION)?,
-            Some(v) if v == SCHEMA_VERSION => {}
+        // Check the version before touching anything: the meta table is missing in a new file.
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        match existing.as_deref() {
+            None | Some(SCHEMA_VERSION) => {}
+            Some("1") => {
+                return Err("this database was made by a preview version of tracker-top (schema 1) \
+                     and cannot be opened: start a new database and import the master pile list again"
+                    .into());
+            }
             Some(v) => {
                 return Err(format!(
-                    "database schema version {v} is not supported by this program"
+                    "database schema version {v} is not supported by this program (it expects {SCHEMA_VERSION}); \
+                     use a newer version of tracker-top"
                 ));
             }
+        }
+        conn.execute_batch(SCHEMA).map_err(db)?;
+        let store = Self { conn, path };
+        if existing.is_none() {
+            store.set_meta("schema_version", SCHEMA_VERSION)?;
         }
         Ok(store)
     }
@@ -396,7 +433,7 @@ impl Store {
         let mut st = self
             .conn
             .prepare(
-                "SELECT pile_id, tracker, block, section, easting, northing, pile_type, color
+                "SELECT pile_id, tracker, block, section, easting, northing, pile_type, color, tracker_type
                  FROM piles ORDER BY tracker, northing, pile_id",
             )
             .map_err(db)?;
@@ -410,6 +447,7 @@ impl Store {
                 northing: r.get(5)?,
                 pile_type: r.get(6)?,
                 color: r.get(7)?,
+                tracker_type: r.get(8)?,
             })
         })
         .map_err(db)?
@@ -451,6 +489,28 @@ impl Store {
         for row in rows {
             let (id, e) = row.map_err(db)?;
             out.entry(id).or_insert(e);
+        }
+        Ok(out)
+    }
+
+    /// Latest non-voided flood value per pile: pile -> (value, import_id).
+    fn latest_flood(&self) -> Result<HashMap<String, (f64, i64)>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT f.pile_id, f.value, f.import_id
+                 FROM flood_values f JOIN imports i ON i.import_id = f.import_id
+                 WHERE i.voided_at IS NULL
+                 ORDER BY f.pile_id, f.import_id DESC",
+            )
+            .map_err(db)?;
+        let rows = st
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?))))
+            .map_err(db)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (id, v) = row.map_err(db)?;
+            out.entry(id).or_insert(v);
         }
         Ok(out)
     }
@@ -502,7 +562,7 @@ impl Store {
         }
         let mut rep = match kind {
             Kind::Master => self.import_master(rep, &table, &sha, origin)?,
-            Kind::Survey | Kind::Lidar => {
+            Kind::Survey | Kind::Lidar | Kind::Flood => {
                 self.import_elevations(rep, kind, &table, &sha, survey_date, origin)?
             }
         };
@@ -525,7 +585,9 @@ impl Store {
         let c_section = table.find(Col::Section);
         let c_type = table.find(Col::PileType);
         let c_color = table.find(Col::Color);
+        let c_ttype = table.find(Col::TrackerType);
         let c_z = table.find(Col::Elevation);
+        let c_flood = table.find(Col::Flood);
         for (col, idx) in [
             (Col::PileId, c_id),
             (Col::Tracker, c_tracker),
@@ -535,7 +597,9 @@ impl Store {
             (Col::Northing, c_n),
             (Col::PileType, c_type),
             (Col::Color, c_color),
+            (Col::TrackerType, c_ttype),
             (Col::Elevation, c_z),
+            (Col::Flood, c_flood),
         ] {
             if let Some(i) = idx {
                 rep.columns
@@ -565,8 +629,23 @@ impl Store {
         if c_color.is_none() {
             rep.info("No Color column: pile colours are left empty.");
         }
+        if let Some(z) = c_z {
+            let others: Vec<&str> = table
+                .find_all(Col::Elevation)
+                .into_iter()
+                .filter(|&i| i != z)
+                .map(|i| table.headers[i].as_str())
+                .collect();
+            if !others.is_empty() {
+                rep.info(&format!(
+                    "Ground elevation read from \"{}\"; also in the file but not used: {}.",
+                    table.headers[z],
+                    others.join(", ")
+                ));
+            }
+        }
 
-        let mut rows: Vec<(MasterPile, Option<f64>)> = Vec::new();
+        let mut rows: Vec<(MasterPile, Option<f64>, Option<f64>)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for (i, row) in table.rows.iter().enumerate() {
             let ln = line_no(table, i);
@@ -612,6 +691,7 @@ impl Store {
                 },
             };
             let z = parse_num(table.cell(row, c_z));
+            let flood = parse_num(table.cell(row, c_flood));
             rows.push((
                 MasterPile {
                     pile_id: id,
@@ -622,8 +702,10 @@ impl Store {
                     northing: n,
                     pile_type: table.cell(row, c_type).to_string(),
                     color: table.cell(row, c_color).to_string(),
+                    tracker_type: table.cell(row, c_ttype).to_string(),
                 },
                 z,
+                flood,
             ));
         }
         if rep.has_errors() {
@@ -640,15 +722,16 @@ impl Store {
             .collect();
         let mut new_rows = Vec::new();
         let mut same = 0usize;
-        for (p, z) in rows {
+        for (p, z, flood) in rows {
             match existing.get(&p.pile_id) {
-                None => new_rows.push((p, z)),
+                None => new_rows.push((p, z, flood)),
                 Some(old) => {
                     let identical = old.tracker == p.tracker
                         && old.block == p.block
                         && old.section == p.section
                         && old.pile_type == p.pile_type
                         && old.color == p.color
+                        && old.tracker_type == p.tracker_type
                         && (old.easting - p.easting).abs() < 0.001
                         && (old.northing - p.northing).abs() < 0.001;
                     if identical {
@@ -685,7 +768,7 @@ impl Store {
             );
         }
 
-        let with_z = new_rows.iter().filter(|(_, z)| z.is_some()).count();
+        let with_z = new_rows.iter().filter(|(_, z, _)| z.is_some()).count();
         let z_col = rep.columns.get("Elevation").cloned().unwrap_or_default();
         if with_z > 0 {
             rep.add(
@@ -693,6 +776,17 @@ impl Store {
                 &format!("The file has a ground elevation column (\"{z_col}\"): {with_z} elevations were also recorded as LIDAR / design ground."),
                 "",
             );
+        }
+        let with_flood = new_rows.iter().filter(|(_, _, f)| f.is_some()).count();
+        let flood_col = rep.columns.get("Flood").cloned().unwrap_or_default();
+        match (c_flood, with_flood) {
+            (None, _) => rep.info("No flood column: flood values can be imported later (Import > Flood values)."),
+            (Some(_), 0) => rep.info(&format!("The flood column (\"{flood_col}\") is empty: flood values can be imported later.")),
+            (Some(_), n) => rep.add(
+                Level::Info,
+                &format!("The file has a flood column (\"{flood_col}\"): {n} flood values were also recorded."),
+                "",
+            ),
         }
         rep.sort();
         let at = now();
@@ -711,11 +805,11 @@ impl Store {
         {
             let mut ins = tx
                 .prepare(
-                    "INSERT INTO piles (pile_id, tracker, block, section, easting, northing, pile_type, color, import_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    "INSERT INTO piles (pile_id, tracker, block, section, easting, northing, pile_type, color, tracker_type, import_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 )
                 .map_err(db)?;
-            for (p, _) in &new_rows {
+            for (p, _, _) in &new_rows {
                 ins.execute(params![
                     p.pile_id,
                     p.tracker,
@@ -725,6 +819,7 @@ impl Store {
                     p.northing,
                     p.pile_type,
                     p.color,
+                    p.tracker_type,
                     master_id
                 ])
                 .map_err(db)?;
@@ -749,9 +844,42 @@ impl Store {
             let mut ins = tx
                 .prepare("INSERT INTO elevations (import_id, pile_id, z, matched_by) VALUES (?1, ?2, ?3, 'id')")
                 .map_err(db)?;
-            for (p, z) in &new_rows {
+            for (p, z, _) in &new_rows {
                 if let Some(z) = z {
                     ins.execute(params![lidar_id, p.pile_id, z]).map_err(db)?;
+                }
+            }
+        }
+        if with_flood > 0 {
+            let mut flood_rep = ImportReport::new("flood", &rep.file_name);
+            flood_rep.accepted = true;
+            flood_rep.rows_total = rep.rows_total;
+            flood_rep.rows_used = with_flood;
+            flood_rep.rows_rejected = new_rows.len() - with_flood;
+            flood_rep.columns.insert("Flood".into(), flood_col.clone());
+            flood_rep.info(&format!("Flood values read from column \"{flood_col}\" of the master pile list (import #{master_id})."));
+            tx.execute(
+                "INSERT INTO imports (kind, file_name, sha256, imported_at, survey_date, origin, rows_total, rows_used, rows_rejected, report)
+                 VALUES ('flood', ?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    rep.file_name,
+                    sha,
+                    at,
+                    origin,
+                    rep.rows_total as i64,
+                    with_flood as i64,
+                    (new_rows.len() - with_flood) as i64,
+                    serde_json::to_string(&flood_rep).expect("report serialises")
+                ],
+            )
+            .map_err(db)?;
+            let flood_id = tx.last_insert_rowid();
+            let mut ins = tx
+                .prepare("INSERT INTO flood_values (import_id, pile_id, value, matched_by) VALUES (?1, ?2, ?3, 'id')")
+                .map_err(db)?;
+            for (p, _, f) in &new_rows {
+                if let Some(f) = f {
+                    ins.execute(params![flood_id, p.pile_id, f]).map_err(db)?;
                 }
             }
         }
@@ -775,17 +903,21 @@ impl Store {
             return Ok(rep);
         }
         let s = self.settings()?;
+        let flood = kind == Kind::Flood;
+        // The value read per pile: ground elevation, or flood value.
+        let value_col = if flood { Col::Flood } else { Col::Elevation };
+        let what = if flood { "Flood value" } else { "Elevation" };
         let c_id = table.find(Col::PileId);
         let c_e = table.find(Col::Easting);
         let c_n = table.find(Col::Northing);
-        let c_z = table.find(Col::Elevation);
+        let c_z = table.find(value_col);
         let c_code = table.find(Col::Code);
         let c_date = table.find(Col::Date);
         for (col, idx) in [
             (Col::PileId, c_id),
             (Col::Easting, c_e),
             (Col::Northing, c_n),
-            (Col::Elevation, c_z),
+            (value_col, c_z),
             (Col::Code, c_code),
             (Col::Date, c_date),
         ] {
@@ -796,7 +928,13 @@ impl Store {
         }
         if c_z.is_none() {
             rep.error(&format!(
-                "No elevation column found (expected a header such as Elevation, Z, Height, Altitude or Z LIDAR). Headers in the file: {}.",
+                "No {} column found (expected a header such as {}). Headers in the file: {}.",
+                what.to_lowercase(),
+                if flood {
+                    "Flood, Flood depth, Flood level or Inondation"
+                } else {
+                    "Elevation, Z, Height, Altitude or Z LIDAR"
+                },
                 table.headers.join(", ")
             ));
             return Ok(rep);
@@ -816,7 +954,13 @@ impl Store {
             return Ok(rep);
         }
         if !has_xy {
-            rep.add(Level::Warning, "No Easting/Northing columns: points are matched by ID only and positions cannot be checked.", "");
+            // Normal for LIDAR and flood tables; worth a warning for a field survey.
+            let level = if kind == Kind::Survey {
+                Level::Warning
+            } else {
+                Level::Info
+            };
+            rep.add(level, "No Easting/Northing columns: points are matched by ID only and positions cannot be checked.", "");
         }
 
         let index = PileIndex::new(&masters, s.match_radius_m);
@@ -854,7 +998,7 @@ impl Store {
                 rejected += 1;
                 rep.add(
                     Level::Warning,
-                    "Elevation missing or not a number: row skipped",
+                    &format!("{what} missing or not a number: row skipped"),
                     format!("{label} ({:?})", table.cell(row, c_z)),
                 );
                 continue;
@@ -983,13 +1127,13 @@ impl Store {
         rep.add(
             Level::Info,
             &format!(
-                "{} piles on {} trackers received a {} elevation dated {date}.",
+                "{} piles on {} trackers received a {} dated {date}.",
                 used.len(),
                 trackers.len(),
-                if kind == Kind::Survey {
-                    "surveyed"
-                } else {
-                    "LIDAR"
+                match kind {
+                    Kind::Survey => "surveyed elevation",
+                    Kind::Flood => "flood value",
+                    _ => "LIDAR elevation",
                 }
             ),
             "",
@@ -1016,7 +1160,24 @@ impl Store {
         )
         .map_err(db)?;
         let import_id = tx.last_insert_rowid();
-        {
+        if flood {
+            let mut ins = tx
+                .prepare(
+                    "INSERT INTO flood_values (import_id, pile_id, value, matched_by) VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(db)?;
+            let mut rows: Vec<&Row> = used.values().collect();
+            rows.sort_by_key(|r| r.pile);
+            for r in rows {
+                ins.execute(params![
+                    import_id,
+                    masters[r.pile].pile_id,
+                    r.z,
+                    if r.by_position { "position" } else { "id" }
+                ])
+                .map_err(db)?;
+            }
+        } else {
             let mut ins = tx
                 .prepare(
                     "INSERT INTO elevations (import_id, pile_id, z, easting, northing, offset_m, matched_by, code)
@@ -1179,7 +1340,8 @@ impl Store {
         let mut st = self
             .conn
             .prepare(
-                "SELECT pile_id, run_id, z_ground, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier
+                "SELECT pile_id, run_id, z_ground, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier,
+                        min_top, min_top_active
                  FROM run_piles WHERE run_id = ?1",
             )
             .map_err(db)?;
@@ -1198,6 +1360,8 @@ impl Store {
                             reveal: r.get(6)?,
                             angle_diff_deg: r.get(7)?,
                             outlier: r.get::<_, i64>(8)? != 0,
+                            min_top: r.get(9)?,
+                            min_top_active: r.get::<_, i64>(10)? != 0,
                         },
                     ))
                 })
@@ -1227,7 +1391,12 @@ impl Store {
     }
 
     /// Signature of a tracker's optimisation inputs. Equal signatures give equal results.
-    fn input_sig(params_json: &str, piles: &[MasterPile], elevs: &[&Elev]) -> String {
+    fn input_sig(
+        params_json: &str,
+        piles: &[MasterPile],
+        elevs: &[&Elev],
+        floods: &HashMap<String, (f64, i64)>,
+    ) -> String {
         let mut h = Sha256::new();
         h.update(params_json.as_bytes());
         for (p, e) in piles.iter().zip(elevs) {
@@ -1237,6 +1406,14 @@ impl Store {
             h.update(p.northing.to_bits().to_le_bytes());
             h.update(e.z.to_bits().to_le_bytes());
             h.update(e.import_id.to_le_bytes());
+            match floods.get(&p.pile_id) {
+                Some((v, id)) => {
+                    h.update([1]);
+                    h.update(v.to_bits().to_le_bytes());
+                    h.update(id.to_le_bytes());
+                }
+                None => h.update([2]),
+            }
         }
         h.finalize()
             .iter()
@@ -1270,6 +1447,7 @@ impl Store {
         let params_json = settings.params_json();
         let piles = self.master_piles()?;
         let elevs = self.latest_elevations()?;
+        let floods = self.latest_flood()?;
         let latest = self.latest_runs()?;
 
         let mut summary = RunSummary {
@@ -1284,7 +1462,7 @@ impl Store {
                 summary.awaiting += 1;
                 continue;
             };
-            let sig = Self::input_sig(&params_json, tp, &ev);
+            let sig = Self::input_sig(&params_json, tp, &ev, &floods);
             if !force && latest.get(&tp[0].tracker).is_some_and(|l| l.3 == sig) {
                 summary.up_to_date += 1;
                 continue;
@@ -1303,6 +1481,7 @@ impl Store {
                         easting: p.easting,
                         northing: p.northing,
                         z_lidar: e.z,
+                        min_top: settings.min_top(e.z, floods.get(&p.pile_id).map(|f| f.0)),
                     })
                     .collect(),
             };
@@ -1339,8 +1518,9 @@ impl Store {
                 .map_err(db)?;
             let mut ins_p = tx
                 .prepare(
-                    "INSERT INTO run_piles (run_id, pile_id, z_ground, z_import_id, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO run_piles (run_id, pile_id, z_ground, z_import_id, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier,
+                                            min_top, min_top_active)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
                 .map_err(db)?;
             for ((tracker, sig, ev), res) in todo.iter().zip(&results) {
@@ -1371,7 +1551,9 @@ impl Store {
                             r.top,
                             r.final_reveal,
                             r.angle_diff_deg,
-                            r.lidar_outlier as i64
+                            r.lidar_outlier as i64,
+                            p.min_top,
+                            r.min_top_active as i64
                         ])
                         .map_err(db)?;
                 }
@@ -1397,6 +1579,7 @@ impl Store {
         let params_json = settings.params_json();
         let masters = self.master_piles()?;
         let elevs = self.latest_elevations()?;
+        let floods = self.latest_flood()?;
         let runs = self.latest_runs()?;
         let mut results = self.latest_pile_results(&masters, &runs)?;
         let counts = self.survey_counts()?;
@@ -1422,6 +1605,7 @@ impl Store {
                     &params_json,
                     tp,
                     &ev.iter().map(|e| e.expect("complete")).collect::<Vec<_>>(),
+                    &floods,
                 )
             });
             let run = runs.get(&tp[0].tracker);
@@ -1430,10 +1614,19 @@ impl Store {
                 None if n_missing > 0 => ("AwaitingSurvey".to_string(), false),
                 None => ("NotRun".to_string(), true),
             };
+            let n_flood = tp
+                .iter()
+                .filter(|p| floods.contains_key(&p.pile_id))
+                .count();
+            let n_flood_raised = tp
+                .iter()
+                .filter(|p| results.get(&p.pile_id).is_some_and(|r| r.min_top_active))
+                .count();
             trackers.push(TrackerState {
                 tracker: tp[0].tracker.clone(),
                 block: tp[0].block.clone(),
                 section: tp[0].section.clone(),
+                tracker_type: tp[0].tracker_type.clone(),
                 n_piles: tp.len(),
                 n_survey,
                 n_lidar,
@@ -1444,9 +1637,13 @@ impl Store {
                 run_at: run.map(|r| r.1.clone()),
                 max_angle_deg: run.map(|r| r.4),
                 max_cut_fill: run.map(|r| r.5),
+                n_flood,
+                n_flood_raised,
                 first_pile: range.start,
             });
             for (p, e) in tp.iter().zip(ev) {
+                let flood = floods.get(&p.pile_id);
+                let flood_value = flood.map(|f| f.0);
                 piles.push(PileState {
                     pile_id: p.pile_id.clone(),
                     tracker: p.tracker.clone(),
@@ -1456,12 +1653,17 @@ impl Store {
                     northing: p.northing,
                     pile_type: p.pile_type.clone(),
                     color: p.color.clone(),
+                    tracker_type: p.tracker_type.clone(),
                     z: e.map(|e| e.z),
                     z_source: e.map(|e| e.kind),
                     z_import_id: e.map(|e| e.import_id),
                     z_date: e.map(|e| e.date.clone()),
                     offset_m: e.and_then(|e| e.offset_m),
                     n_surveys: counts.get(&p.pile_id).copied().unwrap_or(0),
+                    flood: flood_value,
+                    flood_import_id: flood.map(|f| f.1),
+                    flood_level: e.and_then(|e| settings.flood_water_level(e.z, flood_value)),
+                    min_top: e.and_then(|e| settings.min_top(e.z, flood_value)),
                     result: results.remove(&p.pile_id),
                 });
             }
@@ -1553,6 +1755,12 @@ impl Store {
                 .filter(|p| p.z_source == Some(Kind::Lidar))
                 .count(),
             piles_no_elevation: state.piles.iter().filter(|p| p.z.is_none()).count(),
+            piles_with_flood: state.piles.iter().filter(|p| p.flood.is_some()).count(),
+            piles_flood_raised: state
+                .piles
+                .iter()
+                .filter(|p| p.result.as_ref().is_some_and(|r| r.min_top_active))
+                .count(),
             stale_trackers: state.trackers.iter().filter(|t| t.stale).count(),
             tracker_status,
             imports: imports as usize,
@@ -1819,6 +2027,182 @@ mod tests {
             .import_file(Kind::Survey, "s2.csv", later.as_bytes(), None, "test")
             .unwrap();
         assert!(again.accepted);
+    }
+
+    fn pile<'a>(st: &'a State, id: &str) -> &'a PileState {
+        st.piles.iter().find(|p| p.pile_id == id).unwrap()
+    }
+
+    #[test]
+    fn flood_layer_raises_tops_and_follows_settings() {
+        let mut s = Store::open_in_memory().unwrap();
+        // Like the project master file: design ground, raw LIDAR, tracker type, empty flood column.
+        let mut master = String::from(
+            "Pile Name;Tracker;Tracker type;Pile Type;Easting;Northing;Z LIDAR_CF;Z LIDAR;Flood;Color\n",
+        );
+        for t in 1..=2 {
+            for i in 0..5 {
+                master.push_str(&format!(
+                    "P{t}.{i};T{t};28 MODULE EXT TRACKER;SAP-7;{};{};10,0;10,3;;RED\n",
+                    t * 10,
+                    i * 8
+                ));
+            }
+        }
+        let rep = s
+            .import_file(Kind::Master, "master.csv", master.as_bytes(), None, "t")
+            .unwrap();
+        let text = findings(&rep);
+        assert!(rep.accepted, "{text}");
+        assert!(
+            text.contains("read from \"Z LIDAR_CF\"; also in the file but not used: Z LIDAR"),
+            "{text}"
+        );
+        assert!(text.contains("flood column (\"Flood\") is empty"), "{text}");
+        let st = s.state().unwrap();
+        assert_eq!(pile(&st, "P1.0").z, Some(10.0));
+        assert_eq!(pile(&st, "P1.0").tracker_type, "28 MODULE EXT TRACKER");
+        assert_eq!(st.trackers[0].tracker_type, "28 MODULE EXT TRACKER");
+        s.optimize(false, "t", 1).unwrap();
+        assert!(
+            s.state()
+                .unwrap()
+                .piles
+                .iter()
+                .all(|p| (p.result.as_ref().unwrap().top - 11.45).abs() < 1e-4)
+        );
+
+        // The core cannot change, tracker type included.
+        let changed = master.replace("28 MODULE EXT TRACKER", "56 MODULE EXT TRACKER");
+        assert!(
+            !s.import_file(Kind::Master, "m2.csv", changed.as_bytes(), None, "t")
+                .unwrap()
+                .accepted
+        );
+
+        // Flood depths for tracker T1 only: 1.50 m of water, above the 1.45 m nominal reveal.
+        let flood = "Pile ID,Flood depth (m)\nP1.0,1.5\nP1.1,1.5\nP1.2,1.5\nP1.3,1.5\nP1.4,1.5\n";
+        let rep = s
+            .import_file(Kind::Flood, "flood.csv", flood.as_bytes(), None, "t")
+            .unwrap();
+        assert!(rep.accepted, "{}", findings(&rep));
+        assert_eq!(
+            rep.columns.get("Flood").map(String::as_str),
+            Some("Flood depth (m)")
+        );
+        let st = s.state().unwrap();
+        assert_eq!((st.trackers[0].stale, st.trackers[1].stale), (true, false));
+        assert_eq!(pile(&st, "P1.2").flood_level, Some(11.5));
+        assert_eq!(pile(&st, "P1.2").min_top, Some(11.5));
+        assert_eq!(s.optimize(false, "t", 1).unwrap().trackers_run, 1);
+        let st = s.state().unwrap();
+        let r = pile(&st, "P1.2").result.clone().unwrap();
+        assert!(
+            r.top >= 11.5 - 1e-4 && r.min_top_active && r.min_top == Some(11.5),
+            "{r:?}"
+        );
+        assert_eq!(
+            (st.trackers[0].n_flood, st.trackers[0].n_flood_raised),
+            (5, 5)
+        );
+        assert_eq!(st.trackers[0].status, "Compliant");
+        let sum = s.summary().unwrap();
+        assert_eq!((sum.piles_with_flood, sum.piles_flood_raised), (5, 5));
+
+        // 0.25 m clearance: tops must be 1.75 m above ground, beyond the 1.60 m
+        // maximum reveal, so about 0.15 m of fill is needed.
+        let mut set = s.settings().unwrap();
+        set.flood_clearance_m = 0.25;
+        s.set_settings(&set).unwrap();
+        s.optimize(false, "t", 1).unwrap();
+        let st = s.state().unwrap();
+        let r = pile(&st, "P1.2").result.clone().unwrap();
+        assert!(
+            r.top >= 11.75 - 1e-4 && (r.cut_fill - 0.15).abs() < 2e-3,
+            "{r:?}"
+        );
+        assert_eq!(st.trackers[0].status, "Graded");
+        assert_eq!(st.trackers[1].status, "Compliant");
+
+        // Same file again: refused. A newer file (water elevations) replaces it.
+        assert!(
+            !s.import_file(Kind::Flood, "again.csv", flood.as_bytes(), None, "t")
+                .unwrap()
+                .accepted
+        );
+        set.flood_mode = crate::FloodMode::Elevation;
+        set.flood_clearance_m = 0.0;
+        s.set_settings(&set).unwrap();
+        let levels = "Pile ID;PHE\nP1.0;11,0\nP1.1;11,0\nP1.2;11,62\nP1.3;11,0\nP1.4;11,0\n";
+        let rep = s
+            .import_file(Kind::Flood, "phe.csv", levels.as_bytes(), None, "t")
+            .unwrap();
+        assert!(rep.accepted, "{}", findings(&rep));
+        s.optimize(false, "t", 1).unwrap();
+        let st = s.state().unwrap();
+        assert_eq!(pile(&st, "P1.0").min_top, Some(11.0));
+        assert!(!pile(&st, "P1.0").result.as_ref().unwrap().min_top_active);
+        let r = pile(&st, "P1.2").result.clone().unwrap();
+        assert!(r.top >= 11.62 - 1e-4 && r.min_top_active, "{r:?}");
+
+        // Voiding the flood imports removes the requirement.
+        s.void_import(rep.import_id.unwrap(), "wrong datum")
+            .unwrap();
+        let id = s
+            .imports()
+            .unwrap()
+            .iter()
+            .find(|i| i.file_name == "flood.csv")
+            .unwrap()
+            .import_id;
+        s.void_import(id, "superseded").unwrap();
+        s.optimize(false, "t", 1).unwrap();
+        let st = s.state().unwrap();
+        assert!(
+            st.piles
+                .iter()
+                .all(|p| p.flood.is_none() && !p.result.as_ref().unwrap().min_top_active)
+        );
+        assert!((pile(&st, "P1.2").result.as_ref().unwrap().top - 11.45).abs() < 1e-4);
+    }
+
+    #[test]
+    fn master_with_flood_values_records_them() {
+        let mut s = Store::open_in_memory().unwrap();
+        let master =
+            "Pile ID,Easting,Northing,Z,Flood\nA.1,0,0,5,0.2\nA.2,0,8,5,\nA.3,0,16,5,0.4\n";
+        let rep = s
+            .import_file(Kind::Master, "m.csv", master.as_bytes(), None, "t")
+            .unwrap();
+        assert!(
+            findings(&rep).contains("2 flood values were also recorded"),
+            "{}",
+            findings(&rep)
+        );
+        let st = s.state().unwrap();
+        assert_eq!(
+            st.piles.iter().map(|p| p.flood).collect::<Vec<_>>(),
+            vec![Some(0.2), None, Some(0.4)]
+        );
+        assert!(
+            s.imports()
+                .unwrap()
+                .iter()
+                .any(|i| i.kind == "flood" && i.rows_used == 2)
+        );
+    }
+
+    #[test]
+    fn preview_database_is_refused_with_a_clear_message() {
+        let path = std::env::temp_dir().join(format!("tracker-top-v1-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '1');").unwrap();
+        }
+        let err = Store::open(&path).err().unwrap();
+        assert!(err.contains("preview version"), "{err}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

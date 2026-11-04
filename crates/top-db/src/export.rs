@@ -5,11 +5,12 @@ use crate::settings::Settings;
 use crate::store::{ImportRow, Kind, PileState, State, TrackerState};
 use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
 
-const PILE_HEADERS: [&str; 22] = [
+const PILE_HEADERS: [&str; 27] = [
     "Pile ID",
     "Block",
     "Section",
     "Tracker",
+    "Tracker Type",
     "Pile Type",
     "Color",
     "Easting",
@@ -19,6 +20,10 @@ const PILE_HEADERS: [&str; 22] = [
     "Z Date",
     "Survey Offset (m)",
     "Surveys",
+    "Flood Value (m)",
+    "Flood Water Level",
+    "Min ToP (flood)",
+    "Raised For Flood",
     "NEW_ZG",
     "Cut/Fill (m)",
     "ToP",
@@ -43,7 +48,7 @@ fn opt(v: Option<f64>, decimals: usize) -> Cell {
 fn source(k: Option<Kind>) -> String {
     match k {
         Some(Kind::Survey) => "Survey".into(),
-        Some(Kind::Lidar) => "LIDAR".into(),
+        Some(Kind::Lidar) => "LIDAR / design".into(),
         _ => String::new(),
     }
 }
@@ -60,11 +65,15 @@ fn pile_cells(p: &PileState, t: &TrackerState) -> Vec<Cell> {
     if p.z.is_none() {
         comment.push("No elevation yet");
     }
+    if r.is_some_and(|r| r.min_top_active) {
+        comment.push("Raised above flood level");
+    }
     vec![
         Cell::Text(p.pile_id.clone()),
         Cell::Text(p.block.clone()),
         Cell::Text(p.section.clone()),
         Cell::Text(p.tracker.clone()),
+        Cell::Text(p.tracker_type.clone()),
         Cell::Text(p.pile_type.clone()),
         Cell::Text(p.color.clone()),
         Cell::Num(p.easting, 4),
@@ -74,6 +83,14 @@ fn pile_cells(p: &PileState, t: &TrackerState) -> Vec<Cell> {
         Cell::Text(p.z_date.clone().unwrap_or_default()),
         opt(p.offset_m, 3),
         Cell::Num(p.n_surveys as f64, 0),
+        opt(p.flood, 3),
+        opt(p.flood_level, 4),
+        opt(p.min_top, 4),
+        Cell::Text(match r {
+            Some(r) if r.min_top_active => "Yes".into(),
+            Some(_) if p.min_top.is_some() => "No".into(),
+            _ => String::new(),
+        }),
         opt(r.map(|r| r.new_ground), 4),
         opt(r.map(|r| r.cut_fill), 4),
         opt(r.map(|r| r.top), 4),
@@ -185,6 +202,7 @@ fn tracker_cells(t: &TrackerState) -> Vec<Cell> {
         Cell::Text(t.tracker.clone()),
         Cell::Text(t.block.clone()),
         Cell::Text(t.section.clone()),
+        Cell::Text(t.tracker_type.clone()),
         Cell::Num(t.n_piles as f64, 0),
         Cell::Num(t.n_survey as f64, 0),
         Cell::Num(t.n_lidar as f64, 0),
@@ -199,6 +217,8 @@ fn tracker_cells(t: &TrackerState) -> Vec<Cell> {
         }),
         opt(t.max_angle_deg, 3),
         opt(t.max_cut_fill, 3),
+        Cell::Num(t.n_flood as f64, 0),
+        Cell::Num(t.n_flood_raised as f64, 0),
         opt(t.run_id.map(|r| r as f64), 0),
         Cell::Text(t.run_at.clone().unwrap_or_default()),
     ]
@@ -241,6 +261,7 @@ pub fn workbook(
                 "Tracker",
                 "Block",
                 "Section",
+                "Tracker Type",
                 "Piles",
                 "Surveyed",
                 "LIDAR only",
@@ -249,6 +270,8 @@ pub fn workbook(
                 "Up To Date",
                 "Max Angle (deg)",
                 "Max Cut/Fill (m)",
+                "Flood Values",
+                "Raised For Flood",
                 "Run",
                 "Run Date",
             ],

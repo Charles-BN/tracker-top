@@ -26,7 +26,10 @@ const statusBadge = (k) => {
   const [cls, label] = STATUS[k] ?? ['neutral', k];
   return `<span class="status st-${cls}"><span class="dot"></span>${esc(label)}</span>`;
 };
-const KIND = { master: 'Master pile list', survey: 'Field survey', lidar: 'LIDAR / design ground' };
+const KIND = { master: 'Master pile list', survey: 'Field survey', lidar: 'LIDAR / design ground', flood: 'Flood values' };
+// Site colour of a pile, as a CSS colour (the master list says e.g. "RED", "LIGHT BLUE").
+const siteColor = (c) => String(c || '').trim().toLowerCase().replace(/\s+/g, '');
+const swatch = (c) => (c ? `<span class="sw-dot" style="background:${esc(siteColor(c))}" title="${esc(c)}"></span>` : '');
 
 // ---------------------------------------------------------------- API
 
@@ -171,6 +174,7 @@ renderers.overview = async () => {
       <div class="tile"><div class="label">No elevation</div><div class="value">${int(s.piles_no_elevation)}</div><div class="sub">trackers wait for these</div></div>
       <div class="tile"><div class="label">Trackers with a valid ToP</div><div class="value">${int(done)}</div><div class="sub">${pct(done, s.trackers)}% · ${int(st.Graded || 0)} need cut/fill</div></div>
       <div class="tile"><div class="label">Out of date</div><div class="value">${int(s.stale_trackers)}</div><div class="sub">${s.stale_trackers ? 'click Optimise to update' : 'all results current'}</div></div>
+      <div class="tile"><div class="label">Piles with a flood value</div><div class="value">${int(s.piles_with_flood)}</div><div class="sub">${s.piles_with_flood ? `${int(s.piles_flood_raised)} raised above the flood` : 'import them when available'}</div></div>
     </div>
     <div class="card" style="margin-top:16px">
       <div class="card-head"><h2>Trackers by status</h2><span class="muted">${int(s.trackers)} trackers</span></div>
@@ -270,6 +274,7 @@ function renderMasterLock() {
   if (!s || !s.piles) { el.hidden = true; return; }
   el.hidden = false;
   el.innerHTML = `<span aria-hidden="true">🔒</span><div><b>${int(s.piles)} piles loaded</b> in ${int(s.trackers)} trackers. The master list cannot be changed; a new file can only add piles that are not in it yet.</div>`;
+  $('#flood-count').textContent = s.piles_with_flood ? `${int(s.piles_with_flood)} piles have a value` : 'not loaded yet';
 }
 
 renderers.import = async () => {
@@ -287,7 +292,7 @@ function trackerRowsFor(state, t) {
   let s = 0;
   for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) {
     if (i > t.first_pile) s += Math.hypot(p.e[i] - p.e[i - 1], p.n[i] - p.n[i - 1]);
-    rows.push({ i, id: p.id[i], s, z: p.z[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i] });
+    rows.push({ i, id: p.id[i], s, z: p.z[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i] });
   }
   return rows;
 }
@@ -317,14 +322,14 @@ renderers.results = async () => {
 function filteredTrackers() {
   const state = cache.state;
   const q = $('#f-search').value.trim().toLowerCase();
-  const block = $('#f-block').value, status = $('#f-status').value, staleOnly = $('#f-stale').checked;
+  const block = $('#f-block').value, status = $('#f-status').value, staleOnly = $('#f-stale').checked, floodOnly = $('#f-flood').checked;
   let pileTrackers = null;
   if (q) {
     pileTrackers = new Set();
     state.piles.id.forEach((id, i) => { if (id.toLowerCase().includes(q)) pileTrackers.add(state.piles.tracker[i]); });
   }
   const list = state.trackers.filter((t) =>
-    (!block || t.block === block) && (!status || t.status === status) && (!staleOnly || t.stale) &&
+    (!block || t.block === block) && (!status || t.status === status) && (!staleOnly || t.stale) && (!floodOnly || t.n_flood_raised > 0) &&
     (!q || t.tracker.toLowerCase().includes(q) || pileTrackers.has(t.tracker)));
   const key = {
     tracker: (t) => t.tracker, block: (t) => t.block, n_piles: (t) => t.n_piles, n_survey: (t) => t.n_survey / t.n_piles,
@@ -369,7 +374,7 @@ function drawTrackerTable() {
   $('#show-more')?.addEventListener('click', () => { rs.limit += 400; drawTrackerTable(); });
 }
 
-['#f-search', '#f-block', '#f-status', '#f-stale'].forEach((s) => $(s).addEventListener('input', () => { rs.limit = 400; if (cache.state) drawTrackerTable(); }));
+['#f-search', '#f-block', '#f-status', '#f-stale', '#f-flood'].forEach((s) => $(s).addEventListener('input', () => { rs.limit = 400; if (cache.state) drawTrackerTable(); }));
 
 function renderDetail(t) {
   const state = cache.state, settings = cache.summary.settings;
@@ -379,11 +384,13 @@ function renderDetail(t) {
   const piles = rows.map((r) => {
     const i = r.i;
     const over = r.ang != null && Math.abs(r.ang) > settings.max_angle_deg + 0.001;
+    const flood = p.flood[i] == null ? '–' : `${fmt(p.flood[i], 2)}${p.mta[i] ? ' <span class="raised" title="Top raised to stay above the flood level">▲</span>' : ''}`;
     return `<tr>
-      <td>${esc(p.id[i])}</td><td>${esc(p.type[i])}</td><td>${esc(p.color[i])}</td>
+      <td>${esc(p.id[i])}</td><td><span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}</span></td>
       <td class="num">${fmt(p.z[i])}</td>
       <td class="muted">${p.zsrc[i] === 'survey' ? `survey ${esc(p.zdate[i])}` : p.zsrc[i] === 'lidar' ? 'LIDAR' : 'none'}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠ ${fmt(p.offset[i], 2)} m</span>` : ''}</td>
       <td class="num">${fmt(p.cf[i])}</td><td class="num"><b>${fmt(p.top[i])}</b></td><td class="num">${fmt(p.rev[i])}</td>
+      <td class="num" title="${p.mintop[i] == null ? '' : `Lowest allowed top: ${fmt(p.mintop[i])}`}">${flood}</td>
       <td class="num"${over ? ' style="color:var(--critical-text);font-weight:600"' : ''}>${fmt(p.ang[i], 3)}${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}</td></tr>`;
   }).join('');
   el.innerHTML = `
@@ -392,15 +399,17 @@ function renderDetail(t) {
     ${t.n_missing ? `<p class="ink2" style="margin-bottom:8px">${t.n_missing} pile${t.n_missing === 1 ? ' has' : 's have'} no elevation yet; the tracker is optimised once every pile has one.</p>` : ''}
     <div class="kv">
       <div><span>Block / section</span><b>${esc(t.block || '–')} / ${esc(t.section || '–')}</b></div>
+      ${t.tracker_type ? `<div style="grid-column:span 2"><span>Tracker type</span><b>${esc(t.tracker_type)}</b></div>` : ''}
       <div><span>Piles surveyed</span><b>${t.n_survey} of ${t.n_piles}</b></div>
       <div><span>LIDAR only</span><b>${t.n_lidar}</b></div>
       <div><span>Max angle change</span><b>${fmt(t.max_angle_deg, 3)}°</b></div>
       <div><span>Max cut/fill</span><b>${fmt(t.max_cut_fill, 3)} m</b></div>
       <div><span>Result of</span><b>${esc(t.run_at?.slice(0, 16) ?? '–')}</b></div>
+      <div><span>Flood values</span><b>${t.n_flood ? `${t.n_flood} of ${t.n_piles} · ${t.n_flood_raised} raised` : 'none'}</b></div>
     </div>
     <div id="profile"></div>
     <div class="table-wrap" style="margin-top:12px"><table>
-      <thead><tr><th>Pile</th><th>Type</th><th>Colour</th><th class="num">Ground Z</th><th>Source</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num">Reveal</th><th class="num">Angle (°)</th></tr></thead>
+      <thead><tr><th>Pile</th><th>Type</th><th class="num">Ground Z</th><th>Source</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num">Reveal</th><th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th><th class="num">Angle (°)</th></tr></thead>
       <tbody>${piles}</tbody></table></div>`;
   renderProfile($('#profile', el), rows, settings);
   $('#detail-3d').addEventListener('click', async () => {
@@ -422,6 +431,7 @@ renderers.view3d = async () => {
     $('#v3-color').addEventListener('change', (e) => view.setOptions({ colorBy: e.target.value }));
     $('#v3-ground').addEventListener('change', (e) => view.setOptions({ ground: e.target.value }));
     $('#v3-wire').addEventListener('change', (e) => view.setOptions({ wire: e.target.checked }));
+    $('#v3-water').addEventListener('change', (e) => view.setOptions({ water: e.target.checked }));
     $('#v3-ex').addEventListener('input', (e) => { $('#v3-ex-label').textContent = `${e.target.value}×`; });
     $('#v3-ex').addEventListener('change', (e) => { view.setOptions({ ex: +e.target.value }); view.fit(); });
     $('#v3-block').addEventListener('change', (e) => view.setOptions({ block: e.target.value }));
@@ -445,14 +455,15 @@ function showPileInfo(i) {
   el.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline"><b>${esc(p.id[i])}</b><button class="btn small" id="v3-close" aria-label="Close">✕</button></div>
     <div style="margin:6px 0">${statusBadge(t?.status)}</div>
     ${row('Tracker', esc(p.tracker[i]))}
-    ${row('Pile type', esc(p.type[i] || '–'))}
-    ${row('Colour', esc(p.color[i] || '–'))}
+    ${row('Pile type', `<span class="type-cell">${swatch(p.color[i])}${esc(p.type[i] || '–')}</span>`)}
+    ${p.ttype[i] ? row('Tracker type', esc(p.ttype[i])) : ''}
     ${row('Easting', fmt(p.e[i], 3))}
     ${row('Northing', fmt(p.n[i], 3))}
     ${row('Ground Z', `${fmt(p.z[i])} <span class="muted">${p.zsrc[i] === 'survey' ? 'survey ' + esc(p.zdate[i]) : p.zsrc[i] === 'lidar' ? 'LIDAR' : ''}</span>`)}
     ${row('Cut / fill', fmt(p.cf[i]))}
     ${row('Top of pile', `<b>${fmt(p.top[i])}</b>`)}
     ${row('Reveal', fmt(p.rev[i]))}
+    ${p.flood[i] != null ? row('Flood water level', `${fmt(p.flvl[i])} <span class="muted">value ${fmt(p.flood[i], 2)}</span>`) + row('Lowest allowed top', `${fmt(p.mintop[i])}${p.mta[i] ? ' <span class="muted">raised</span>' : ''}`) : ''}
     ${row('Angle change', `${fmt(p.ang[i], 3)}° <span class="muted">/ ${s.max_angle_deg}°</span>`)}
     <button class="btn small" id="v3-open" style="margin-top:8px;width:100%">Open tracker in Results</button>`;
   $('#v3-close').addEventListener('click', () => { el.hidden = true; });
@@ -547,10 +558,16 @@ renderers.settings = async () => {
   const [{ settings, defaults, watch_folder }, sum] = await Promise.all([api('GET', 'api/settings'), loadSummary(true)]);
   $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, settings);
   $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, settings);
+  const setFlood = (v) => {
+    $('[name="flood_mode"]').value = v.flood_mode;
+    $('[name="flood_clearance_m"]').value = v.flood_clearance_m;
+  };
+  setFlood(settings);
   $('#watch-folder').value = watch_folder || '';
   $('#settings-defaults').onclick = () => {
     $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, defaults);
     $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, defaults);
+    setFlood(defaults);
     toast('Defaults restored in the form. Click Save settings to apply them.');
   };
   const w = sum.watch;
@@ -565,6 +582,8 @@ $('#settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const settings = {};
   for (const [k] of [...OPT_FIELDS, ...MATCH_FIELDS]) settings[k] = Number($(`[name="${k}"]`).value);
+  settings.flood_mode = $('[name="flood_mode"]').value;
+  settings.flood_clearance_m = Number($('[name="flood_clearance_m"]').value);
   const btn = e.submitter;
   if (btn) btn.disabled = true;
   try {

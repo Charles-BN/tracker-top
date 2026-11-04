@@ -6,6 +6,8 @@
 -- imports      every file ever ingested (master list, field survey, LIDAR).
 --              Append-only, except that a survey/LIDAR import can be voided once.
 -- elevations   ground elevations read from survey / LIDAR files. Append-only.
+-- flood_values flood value per pile (depth above ground or water elevation,
+--              see the flood_mode setting). Append-only.
 -- runs         optimisation runs; run_trackers / run_piles hold their results.
 --              Append-only. The current result of a tracker is its latest run.
 
@@ -16,7 +18,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE TABLE IF NOT EXISTS imports (
     import_id     INTEGER PRIMARY KEY,
-    kind          TEXT NOT NULL CHECK (kind IN ('master', 'survey', 'lidar')),
+    kind          TEXT NOT NULL CHECK (kind IN ('master', 'survey', 'lidar', 'flood')),
     file_name     TEXT NOT NULL,
     sha256        TEXT NOT NULL,
     imported_at   TEXT NOT NULL,
@@ -65,6 +67,7 @@ CREATE TABLE IF NOT EXISTS piles (
     northing  REAL NOT NULL,
     pile_type TEXT NOT NULL DEFAULT '',
     color     TEXT NOT NULL DEFAULT '',
+    tracker_type TEXT NOT NULL DEFAULT '',
     import_id INTEGER NOT NULL REFERENCES imports (import_id)
 );
 CREATE INDEX IF NOT EXISTS piles_tracker ON piles (tracker);
@@ -100,6 +103,24 @@ BEGIN
     SELECT RAISE(ABORT, 'elevations are append-only');
 END;
 
+CREATE TABLE IF NOT EXISTS flood_values (
+    import_id  INTEGER NOT NULL REFERENCES imports (import_id),
+    pile_id    TEXT NOT NULL REFERENCES piles (pile_id),
+    value      REAL NOT NULL,
+    matched_by TEXT NOT NULL CHECK (matched_by IN ('id', 'position')),
+    PRIMARY KEY (import_id, pile_id)
+);
+CREATE INDEX IF NOT EXISTS flood_values_pile ON flood_values (pile_id);
+
+CREATE TRIGGER IF NOT EXISTS flood_values_no_update BEFORE UPDATE ON flood_values
+BEGIN
+    SELECT RAISE(ABORT, 'flood values are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS flood_values_no_delete BEFORE DELETE ON flood_values
+BEGIN
+    SELECT RAISE(ABORT, 'flood values are append-only');
+END;
+
 CREATE TABLE IF NOT EXISTS runs (
     run_id          INTEGER PRIMARY KEY,
     created_at      TEXT NOT NULL,
@@ -133,6 +154,8 @@ CREATE TABLE IF NOT EXISTS run_piles (
     reveal         REAL NOT NULL,
     angle_diff_deg REAL NOT NULL,
     outlier        INTEGER NOT NULL,
+    min_top        REAL,
+    min_top_active INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, pile_id)
 );
 

@@ -38,6 +38,8 @@ export function renderProfile(container, rows, settings) {
   const hasCut = rows.some((r) => r.cf != null && Math.abs(r.cf) > 0.0005);
   const revMin = settings.reveal_nominal + settings.delta_min;
   const revMax = settings.reveal_nominal + settings.delta_max;
+  const hasFlood = rows.some((r) => r.flvl != null);
+  const raised = rows.some((r) => r.mta);
 
   const legend = document.createElement('div');
   legend.className = 'legend';
@@ -46,7 +48,8 @@ export function renderProfile(container, rows, settings) {
   if (hasResult) items.push('<span class="item"><span class="ln" style="border-color:var(--s1)"></span>Top of pile (optimised)</span>');
   items.push('<span class="item"><span class="ln" style="border-color:var(--ink-2)"></span>Ground</span>');
   if (hasCut) items.push('<span class="item"><span class="ln dash" style="border-color:var(--s2)"></span>Ground after cut/fill</span>');
-  items.push(`<span class="item"><span class="sw" style="background:var(--band)"></span>Allowed reveal ${revMin.toFixed(2)}–${revMax.toFixed(2)} m</span>`);
+  if (hasFlood) items.push('<span class="item"><span class="ln dash" style="border-color:var(--s3)"></span>Flood water level</span>');
+  items.push(`<span class="item"><span class="sw" style="background:var(--band)"></span>Allowed reveal ${revMin.toFixed(2)}–${revMax.toFixed(2)} m${raised ? ', raised for flood' : ''}</span>`);
   legend.innerHTML = items.join('');
   container.appendChild(legend);
 
@@ -62,6 +65,8 @@ export function renderProfile(container, rows, settings) {
     if (r.ng != null) ys.push(r.ng);
     if (r.top != null) ys.push(r.top);
     if (base(r) != null) ys.push(base(r) + revMax);
+    if (r.flvl != null) ys.push(r.flvl);
+    if (r.mintop != null) ys.push(r.mintop);
   }
   const sMax = Math.max(...rows.map((r) => r.s), 1);
   let yMin = Math.min(...ys), yMax = Math.max(...ys);
@@ -86,10 +91,12 @@ export function renderProfile(container, rows, settings) {
   yl.textContent = 'elevation (m)';
 
   const withBase = rows.filter((r) => base(r) != null);
-  // Reveal window band.
+  // Allowed band for the top: the reveal window, its bottom raised to the
+  // flood minimum where there is one.
+  const low = (r) => Math.max(base(r) + revMin, r.mintop ?? -Infinity);
   if (withBase.length > 1) {
-    const up = withBase.map((r) => `${x(r.s)},${y(base(r) + revMax)}`);
-    const lo = withBase.slice().reverse().map((r) => `${x(r.s)},${y(base(r) + revMin)}`);
+    const up = withBase.map((r) => `${x(r.s)},${y(Math.max(base(r) + revMax, low(r)))}`);
+    const lo = withBase.slice().reverse().map((r) => `${x(r.s)},${y(low(r))}`);
     el('polygon', { points: [...up, ...lo].join(' '), fill: 'var(--band)', stroke: 'none' }, svg);
   }
   const line = (pts, attrs) => {
@@ -102,6 +109,7 @@ export function renderProfile(container, rows, settings) {
     }
   }
   line(rows.filter((r) => r.z != null).map((r) => `${x(r.s)},${y(r.z)}`), { stroke: 'var(--ink-2)' });
+  if (hasFlood) line(rows.filter((r) => r.flvl != null).map((r) => `${x(r.s)},${y(r.flvl)}`), { stroke: 'var(--s3)', 'stroke-dasharray': '2 4' });
   if (hasCut) line(rows.filter((r) => r.ng != null).map((r) => `${x(r.s)},${y(r.ng)}`), { stroke: 'var(--s2)', 'stroke-dasharray': '5 4' });
   if (hasResult) {
     line(rows.filter((r) => r.top != null).map((r) => `${x(r.s)},${y(r.top)}`), { stroke: 'var(--s1)' });
@@ -130,7 +138,8 @@ export function renderProfile(container, rows, settings) {
     tip.innerHTML = `<b>${best.id}</b>
       <div class="row"><span>Ground${src ? ` (${src})` : ''}</span><span class="num">${fmt(best.z)}</span></div>
       ${hasCut ? `<div class="row"><span>Cut / fill</span><span class="num">${fmt(best.cf)}</span></div>` : ''}
-      <div class="row"><span>Top of pile</span><span class="num">${fmt(best.top)}</span></div>
+      ${best.flvl != null ? `<div class="row"><span>Flood water level</span><span class="num">${fmt(best.flvl)}</span></div><div class="row"><span>Lowest allowed top</span><span class="num">${fmt(best.mintop)}</span></div>` : ''}
+      <div class="row"><span>Top of pile${best.mta ? ' (raised for flood)' : ''}</span><span class="num">${fmt(best.top)}</span></div>
       <div class="row"><span>Reveal</span><span class="num">${fmt(best.rev)}</span></div>
       <div class="row"><span>Angle change</span><span class="num">${fmt(best.ang, 3)}°</span></div>
       <div class="row"><span>Distance</span><span class="num">${best.s.toFixed(2)} m</span></div>`;

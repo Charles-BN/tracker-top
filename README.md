@@ -32,14 +32,18 @@ Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the 
 <http://127.0.0.1:8770/>. Keep its window open while you work.
 
 1. **Import → Master pile list**, once. Columns: pile ID, Easting, Northing, pile type, colour,
-   and tracker, block, section when available (without a Tracker column, the tracker is the pile
-   ID without its last part: `P01.02.01.05` → `P01.02.01`).
+   and tracker, block, section, tracker type when available (without a Tracker column, the
+   tracker is the pile ID without its last part: `P01.02.01.05` → `P01.02.01`). Excel or CSV.
 2. **Import → LIDAR / design ground** (optional): elevations used for piles that have not been
-   surveyed yet. A master list with a `Z LIDAR` column loads it at the same time.
-3. **Import → Daily survey report**, every day, or set a **watch folder** (below).
-4. Trackers are **optimised automatically** after each import, as soon as every pile of a
-   tracker has an elevation. Only trackers whose elevations changed are recomputed.
-5. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
+   surveyed yet. A master list with a ground column loads it at the same time; `Z LIDAR_CF`
+   (LIDAR with the planned cut/fill) is preferred over `Z LIDAR`, and the import report says
+   which column was used.
+3. **Import → Flood values** (optional, any time): see *Flood* below.
+4. **Import → Daily survey report**, every day, or set a **watch folder** (below).
+5. Trackers are **optimised automatically** after each import, as soon as every pile of a
+   tracker has an elevation. Only trackers whose elevations or flood values changed are
+   recomputed.
+6. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
    **History** of imports, and **Export Excel** (sheets *Piles*, *Trackers*, *Imports*,
    *Settings*) or CSV.
 
@@ -52,9 +56,10 @@ One SQLite file holds everything:
 
 | Part | Rule |
 |---|---|
-| **Piles** (the core: ID, tracker, block, section, Easting, Northing, type, colour) | Immutable. A later master list may only *add* new pile IDs; a file that changes an existing pile is refused whole. Enforced by database triggers, not just by the app. |
+| **Piles** (the core: ID, tracker, block, section, tracker type, Easting, Northing, pile type, colour) | Immutable. A later master list may only *add* new pile IDs; a file that changes an existing pile is refused whole. Enforced by database triggers, not just by the app. |
 | **Imports** (every file, with its report) | Never deleted. A survey or LIDAR import can be *voided* (with a reason); its elevations stop being used and affected trackers are re-optimised. |
-| **Elevations** (ground Z per pile per import) | Append-only. In use: the latest field survey of the pile, else its LIDAR value. |
+| **Elevations** (ground Z per pile per import) | Append-only. In use: the latest field survey of the pile, else its LIDAR / design value. |
+| **Flood values** (per pile per import) | Append-only, voidable. In use: the latest one. Kept out of the core so they can be loaded or corrected later. |
 | **Runs** (optimisation results) | Append-only. A tracker's current result is its latest run; results older than the current elevations or settings are flagged *out of date*. |
 
 The same file imported twice is refused (it is recognised by content, not by name).
@@ -78,6 +83,28 @@ rejected (wrong ID), more than 0.10 m are flagged, and an elevation that changed
 skipped and listed in the import report. A file whose elevation column is `Z LIDAR` is refused
 as a survey. All tolerances are in Settings.
 
+### Flood
+
+Each pile can have a flood value (metres). Its top must stay above the flood water:
+
+```
+lowest allowed top = flood water level + clearance
+flood water level  = ground + value        (Settings: "water depth above the ground", default)
+                   = value                 (Settings: "water level, same datum as the ground")
+```
+
+The clearance (Settings, default 0) should include the drop from the top of pile to the lowest
+module edge at maximum tilt, plus any freeboard. With no grading this raises the bottom of the
+reveal window (e.g. [1.20, 1.60] becomes [1.50, 1.60] for 1.50 m of water); if the flood needs a
+reveal above the maximum, the optimiser adds fill (tracker *Graded*), and if that would exceed
+the cut/fill cap the tracker is *Non-compliant*.
+
+Load the values with **Import → Flood values** (pile ID plus a column such as `Flood`,
+`Flood depth (m)`, `Flood level`, `Inondation`, `PHE`), or as a `Flood` column of the master list.
+A newer file replaces older values; a wrong one can be voided. Results show the flood level in
+the tracker profile (dashed line, raised band), the pile table (▲ = raised), the 3D view (water
+surface, *Flood* colouring) and the Excel export.
+
 ### Watch folder and Trimble Connect
 
 `tracker-top` can import survey files automatically: in **Settings → Watch folder** (or with
@@ -98,9 +125,10 @@ Trimble; see *Not done yet*.
 
 Ground mesh triangulated through the pile ground elevations (coloured by elevation or by
 cut/fill), each pile drawn from its ground to its top, each tracker as a line through its pile
-tops. Colour piles by tracker status, angle change, reveal, cut/fill, elevation source, pile
-type or pile colour; adjustable vertical exaggeration; filter by block; go to a tracker; click a
-pile for its details. Click legend entries to hide or show a category.
+tops. Colour piles by tracker status, angle change, reveal, cut/fill, elevation source, flood,
+or pile type in the site colours of the master list's Color column (one colour per type);
+translucent flood water surface; adjustable vertical exaggeration; filter by block; go to a
+tracker; click a pile for its details. Click legend entries to hide or show a category.
 
 ### Options
 
@@ -139,6 +167,7 @@ Per tracker, a convex QP in the ToP heights `y` and cut/fill `c`:
 minimise   sum (y_i - c_i - z_i - reveal_nominal)^2 + lambda * sum c_i^2
 subject to reveal_min <= y_i - z_i - c_i <= reveal_max,   |c_i| <= max_cut_fill
            |slope_i - slope_{i-1}| <= max_angle (rad)
+           y_i >= min_top_i          (piles with a flood value: water level + clearance)
 ```
 
 The slope-difference constraint is linear in `y` and always at least as strict as the true `atan2` angle
@@ -161,10 +190,17 @@ testdata/         small synthetic sample
 
 ## Verification done
 
-- 36 automated tests: 17 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
-  trackers, parallel == serial), 2 CLI, 17 database (file formats and header spellings, immutability
-  triggers, duplicate files, ID and position matching, offset and jump checks, voiding, incremental
-  re-runs, settings changes, exports).
+- 44 automated tests: 21 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+  trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable), 2 CLI,
+  21 database (file formats and header spellings, immutability triggers, duplicate files, ID and
+  position matching, offset and jump checks, voiding, incremental re-runs, settings changes, flood
+  layer in both modes, exports).
+- Project master file `Piles_MUS_meanwidth_v1_2910_ZLIDARCF.xlsx` (36,913 piles, 2,792 trackers,
+  41 blocks): imported and optimised in 0.8 s on `Z LIDAR_CF`: 2,791 compliant, 1 graded (max cut/fill
+  0.03 m). The same piles on raw `Z LIDAR`: 64 graded (max 0.68 m), consistent with `Z LIDAR_CF`
+  containing the planned earthworks. With a synthetic flood plane over the lowest area (472 piles, up
+  to 2.2 m deep): 57 trackers re-optimised in 0.17 s, 22 piles raised, 14 trackers graded (fill up to
+  0.60 m = 2.20 - 1.60), no top below its flood minimum.
 - Optimiser, full run on 36,913 piles / 2,792 trackers (synthetic terrain over real geometry): 0.2 s on
   2 cores; independent recheck of angles, reveal and cut/fill in Python found 0 violations. Against SciPy
   SLSQP on 150 trackers needing no grading: ToP heights agree to a median of 0.05 mm, max 0.22 mm.
@@ -178,4 +214,6 @@ testdata/         small synthetic sample
 - Direct Trimble Connect API connection (use Trimble Connect Sync + the watch folder meanwhile).
 - Pile-type logic (`pile_name` in the Python script: HMP-31/SMP-31 above 6 % ground slope, minimum embedment).
 - Piles already installed: hold their measured ToP fixed when re-optimising a tracker.
-- Validation on real LIDAR and survey data: `Piles_MUS_meanwidth_v1_0910.xlsx` has no `Z LIDAR` column.
+- Validation on real survey reports and real flood values (none available yet).
+- Databases made by the 0.2.0 preview (schema 1) are refused: start a new one and import the master
+  list again.

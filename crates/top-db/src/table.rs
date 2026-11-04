@@ -33,6 +33,8 @@ pub enum Col {
     Color,
     Date,
     Code,
+    TrackerType,
+    Flood,
 }
 
 impl Col {
@@ -49,6 +51,8 @@ impl Col {
             Col::Color => "Color",
             Col::Date => "Date",
             Col::Code => "Code",
+            Col::TrackerType => "Tracker Type",
+            Col::Flood => "Flood",
         }
     }
 
@@ -117,6 +121,11 @@ impl Col {
                 "zground",
                 "groundz",
                 "zsurvey",
+                // Design ground (LIDAR with planned cut/fill) wins over raw LIDAR.
+                "zlidarcf",
+                "zdesign",
+                "designz",
+                "designground",
                 "zlidar",
                 "lidarz",
                 "lidar",
@@ -132,6 +141,32 @@ impl Col {
                 "ngf",
             ],
             Col::PileType => &["piletype", "type", "typepieu", "pieutype", "pilekind"],
+            Col::TrackerType => &[
+                "trackertype",
+                "typetracker",
+                "trackermodel",
+                "trackerkind",
+                "typedetracker",
+            ],
+            Col::Flood => &[
+                "flood",
+                "flooddepth",
+                "floodlevel",
+                "floodelevation",
+                "floodheight",
+                "floodz",
+                "zflood",
+                "floodvalue",
+                "inondation",
+                "hauteurinondation",
+                "niveauinondation",
+                "coteinondation",
+                "phe",
+                "zphe",
+                "waterlevel",
+                "waterdepth",
+                "wse",
+            ],
             Col::Color => &["color", "colour", "colorcode", "colourcode", "couleur"],
             Col::Date => &[
                 "surveydate",
@@ -170,13 +205,32 @@ pub fn norm_header(h: &str) -> String {
         .collect()
 }
 
+/// A normalised header matches an alias exactly, or with a trailing metre
+/// unit: `"Flood depth (m)"` -> `"flooddepthm"` matches `"flooddepth"`.
+fn header_is(h: &str, alias: &str) -> bool {
+    h == alias || (h.len() == alias.len() + 1 && h.starts_with(alias) && h.ends_with('m'))
+}
+
 impl Table {
     /// Column index for a logical column, if any header matches one of its aliases.
     pub fn find(&self, col: Col) -> Option<usize> {
         let normed: Vec<String> = self.headers.iter().map(|h| norm_header(h)).collect();
         col.aliases()
             .iter()
-            .find_map(|alias| normed.iter().position(|h| h == alias))
+            .find_map(|alias| normed.iter().position(|h| header_is(h, alias)))
+    }
+
+    /// Every column whose header is one of `col`'s spellings, in file order.
+    pub fn find_all(&self, col: Col) -> Vec<usize> {
+        self.headers
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| {
+                let h = norm_header(h);
+                col.aliases().iter().any(|a| header_is(&h, a))
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     pub fn cell<'a>(&'a self, row: &'a [String], col: Option<usize>) -> &'a str {
@@ -443,6 +497,32 @@ mod tests {
         assert_eq!(t.rows[0][0], "P,1");
         assert_eq!(t.find(Col::PileId), Some(0));
         assert_eq!(t.find(Col::Elevation), Some(3));
+    }
+
+    #[test]
+    fn design_ground_flood_and_units() {
+        let t = Table {
+            headers: [
+                "Pile Name",
+                "Tracker type",
+                "Z LIDAR_CF",
+                "Z LIDAR",
+                "Z CF",
+                "Flood depth (m)",
+                "Northing (m)",
+            ]
+            .map(String::from)
+            .to_vec(),
+            rows: vec![],
+            had_header: true,
+        };
+        assert_eq!(t.find(Col::Elevation), Some(2));
+        assert_eq!(t.find_all(Col::Elevation), vec![2, 3]);
+        assert_eq!(t.find(Col::TrackerType), Some(1));
+        assert_eq!(t.find(Col::PileType), None);
+        assert_eq!(t.find(Col::Tracker), None);
+        assert_eq!(t.find(Col::Flood), Some(5));
+        assert_eq!(t.find(Col::Northing), Some(6));
     }
 
     #[test]

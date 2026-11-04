@@ -84,6 +84,7 @@ pub fn read_piles<R: BufRead>(reader: R) -> Result<Vec<Pile>> {
             easting: num(c_e, "Easting")?,
             northing: num(c_n, "Northing")?,
             z_lidar: num(c_z, "Z LIDAR")?,
+            min_top: None,
         });
     }
     Ok(piles)

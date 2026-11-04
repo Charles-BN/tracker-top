@@ -51,6 +51,11 @@
         <p class="ink2">Ground elevations used for piles that have not been surveyed yet, so whole trackers can be optimised before the survey is complete. A field survey always takes precedence.</p>
         <div class="drop" data-kind="lidar" tabindex="0" role="button" aria-label="Choose a LIDAR file" style="margin-top:12px"><b>Drop a LIDAR file here</b><br>or click to choose.</div>
       </div>
+      <div class="card">
+        <div class="card-head"><h2>Flood values</h2><span class="muted" id="flood-count">not loaded yet</span></div>
+        <p class="ink2">One value per pile, in metres: water depth above ground, or water level (see Settings). Each pile's top is kept above the flood water plus a clearance, which raises the bottom of the reveal window. Pile ID plus a column such as Flood, Flood depth or Flood level. A newer file replaces older values.</p>
+        <div class="drop" data-kind="flood" tabindex="0" role="button" aria-label="Choose a flood file" style="margin-top:12px"><b>Drop a flood file here</b><br>or click to choose.</div>
+      </div>
     </div>
     <input type="file" id="file-input" multiple accept=".csv,.txt,.prn,.xlsx,.xlsm,.xls,.ods" hidden>
     <div id="import-results" style="margin-top:16px"></div>
@@ -62,6 +67,7 @@
       <select id="f-block" aria-label="Block"></select>
       <select id="f-status" aria-label="Status"></select>
       <label class="check"><input type="checkbox" id="f-stale"> Out of date only</label>
+      <label class="check"><input type="checkbox" id="f-flood"> Raised for flood</label>
       <span class="muted" id="f-count"></span>
     </div>
     <div class="results">
@@ -80,8 +86,8 @@
           <option value="reveal">Reveal</option>
           <option value="cutfill">Cut / fill</option>
           <option value="source">Elevation source</option>
-          <option value="type">Pile type</option>
-          <option value="pilecolor">Pile colour (master list)</option>
+          <option value="type">Pile type (site colours)</option>
+          <option value="flood">Flood</option>
         </select>
       </label>
       <label class="field"><span>Ground mesh</span>
@@ -91,7 +97,8 @@
           <option value="none">Hidden</option>
         </select>
       </label>
-      <label class="check" style="margin-bottom:14px"><input type="checkbox" id="v3-wire"> Mesh edges</label>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="v3-wire"> Mesh edges</label>
+      <label class="check" style="margin-bottom:14px" title="Translucent surface at the flood water level, where flood values exist"><input type="checkbox" id="v3-water" checked> Flood water surface</label>
       <label class="field"><span>Vertical exaggeration: <b id="v3-ex-label">3×</b></span>
         <input type="range" id="v3-ex" min="1" max="20" step="1" value="3">
       </label>
@@ -123,6 +130,22 @@
       <div class="card">
         <div class="card-head"><h2>Survey matching</h2><span class="muted">How survey points are matched to piles and checked.</span></div>
         <div class="settings-grid" id="settings-match"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Flood</h2><span class="muted">Changing these re-optimises every tracker.</span></div>
+        <div class="settings-grid">
+          <label class="field"><span>Flood value of a pile is</span>
+            <select name="flood_mode">
+              <option value="depth">Water depth above the ground (m)</option>
+              <option value="elevation">Water level, same datum as the ground (m)</option>
+            </select>
+            <small>Depth: water level = ground elevation in use + value. Level: the value itself.</small>
+          </label>
+          <label class="field"><span>Clearance above flood water (m)</span>
+            <input type="number" step="any" name="flood_clearance_m" required>
+            <small>Lowest allowed top of pile = water level + clearance. Include the drop from the top of pile to the lowest module edge at maximum tilt, plus any freeboard.</small>
+          </label>
+        </div>
       </div>
       <div class="card">
         <div class="card-head"><h2>Watch folder</h2><span class="muted">Automatic import, for example from Trimble Connect Sync.</span></div>

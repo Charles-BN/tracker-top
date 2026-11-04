@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "top-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "chrono",
@@ -953,18 +953,18 @@ dependencies = [
 
 [[package]]
 name = "top-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "top-core",
 ]
 
 [[package]]
 name = "top-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "top-db"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "calamine",
  "chrono",

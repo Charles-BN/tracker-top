@@ -91,7 +91,7 @@ export class View3D {
     this.container = container;
     this.legendEl = legendEl;
     this.onPick = onPick;
-    this.opts = { colorBy: 'status', ground: 'elevation', wire: false, ex: 3, block: '' };
+    this.opts = { colorBy: 'status', ground: 'elevation', wire: false, water: true, ex: 3, block: '' };
     this.hidden = new Set();
     this.triCache = new Map();
     this.active = false;
@@ -161,6 +161,20 @@ export class View3D {
       for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) this.pileTracker[i] = ti;
     });
     this.types = [...new Set(p.type)].sort();
+    // Site colour of each pile type, from the master list's Color column. Used
+    // when every pile of a type has the same, valid colour and types differ.
+    const byType = new Map();
+    p.type.forEach((t, i) => {
+      if (!byType.has(t)) byType.set(t, new Set());
+      byType.get(t).add(p.color[i]);
+    });
+    const site = new Map();
+    for (const [t, set] of byType) {
+      const c = set.size === 1 ? cssColor([...set][0]) : null;
+      if (c) site.set(t, { css: c, name: [...set][0] });
+    }
+    const distinct = new Set([...site.values()].map((v) => v.css)).size === site.size;
+    this.typeColors = site.size === byType.size && distinct ? site : null;
     this.triCache.clear();
     const first = !this.built;
     this.build();
@@ -220,14 +234,17 @@ export class View3D {
         return { key: k, rgb: hexRgb(k === 'survey' ? pal[0] : k === 'lidar' ? pal[1] : OTHER) };
       }
       case 'type': {
+        if (this.typeColors) return { key: p.type[i], rgb: hexRgb(this.typeColors.get(p.type[i]).css) };
         const idx = this.types.indexOf(p.type[i]);
         const pal = dark ? CAT.dark : CAT.light;
         const k = idx >= 0 && idx < pal.length ? p.type[i] : 'Other';
         return { key: k, rgb: hexRgb(k === 'Other' ? OTHER : pal[idx]) };
       }
-      case 'pilecolor': {
-        const c = cssColor(p.color[i]);
-        return { key: p.color[i] || '(none)', rgb: hexRgb(c ?? OTHER) };
+      case 'flood': {
+        const pal = dark ? CAT.dark : CAT.light;
+        if (p.flood[i] == null) return { key: 'none', rgb: hexRgb(OTHER) };
+        if (p.mta[i]) return { key: 'raised', rgb: hexRgb(pal[6]) };
+        return { key: 'clear', rgb: hexRgb(pal[2]) };
       }
     }
     return { key: '', rgb: [0.5, 0.5, 0.5] };
@@ -329,6 +346,34 @@ export class View3D {
       }
     }
 
+    // Flood water: translucent surface at the flood water level, over the
+    // triangles whose three piles all have a flood value above their ground.
+    this.hasWater = false;
+    if (this.opts.water && idx.some((i) => p.flvl[i] != null)) {
+      const coords = new Float64Array(idx.length * 2);
+      idx.forEach((i, k) => { coords[2 * k] = X(i); coords[2 * k + 1] = Z(i); });
+      const { index } = this.triangulate(idx, coords);
+      const wet = idx.map((i) => p.flvl[i] != null && p.flvl[i] > this.groundOf(i) + 0.005);
+      const keep = [];
+      for (let t = 0; t < index.length; t += 3) {
+        if (wet[index[t]] && wet[index[t + 1]] && wet[index[t + 2]]) keep.push(index[t], index[t + 1], index[t + 2]);
+      }
+      if (keep.length) {
+        const pos = new Float32Array(idx.length * 3);
+        idx.forEach((i, k) => pos.set([X(i), Y(p.flvl[i] ?? this.groundOf(i)), Z(i)], 3 * k));
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        g.setIndex(keep);
+        g.computeVertexNormals();
+        const water = new THREE.Mesh(g, new THREE.MeshLambertMaterial({
+          color: dark ? 0x3987e5 : 0x2a78d6, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false,
+        }));
+        water.renderOrder = 2;
+        this.root.add(water);
+        this.hasWater = true;
+      }
+    }
+
     // Piles (shaft from ground to top), tops (points, pickable), trackers (lines).
     const shaft = [], shaftCol = [], tops = [], topCol = [];
     this.pointPile = [];
@@ -406,13 +451,22 @@ export class View3D {
       const pal = dark ? CAT.dark : CAT.light;
       html = '<div class="title">Ground elevation source</div>' + items([['survey', pal[0], 'Field survey'], ['lidar', pal[1], 'LIDAR / design'], ['none', OTHER, 'None']]);
     } else if (mode === 'type') {
+      if (this.typeColors) {
+        const list = this.types.map((t) => [t, this.typeColors.get(t).css, `${t || '(no type)'} <span class="muted">${this.typeColors.get(t).name.toLowerCase()}</span>`]);
+        html = '<div class="title">Pile type (site colours)</div>' + items(list);
+      } else {
+        const pal = dark ? CAT.dark : CAT.light;
+        const list = this.types.slice(0, pal.length).map((t, k) => [t, pal[k], t || '(no type)']);
+        list.push(['Other', OTHER, 'Other types']);
+        html = '<div class="title">Pile type</div>' + items(list);
+      }
+    } else if (mode === 'flood') {
       const pal = dark ? CAT.dark : CAT.light;
-      const list = this.types.slice(0, pal.length).map((t, k) => [t, pal[k], t || '(no type)']);
-      list.push(['Other', OTHER, 'Other types']);
-      html = '<div class="title">Pile type</div>' + items(list);
-    } else if (mode === 'pilecolor') {
-      const keys = Object.keys(counts).sort();
-      html = '<div class="title">Pile colour (master list)</div>' + items(keys.map((k) => [k, cssColor(k === '(none)' ? '' : k) ?? OTHER, k]));
+      html = '<div class="title">Flood</div>' + items([['raised', pal[6], 'Top raised above the flood'], ['clear', pal[2], 'Already above the flood'], ['none', OTHER, 'No flood value']]);
+      if (!counts.raised && !counts.clear) html += '<div class="muted" style="margin-top:4px">No flood values imported yet.</div>';
+    }
+    if (this.hasWater) {
+      html += `<div class="item" style="margin-top:6px;cursor:default"><span class="sw" style="background:${dark ? '#3987e5' : '#2a78d6'};opacity:0.5"></span>Flood water surface</div>`;
     }
     if (this.opts.ground !== 'none' && this.groundRange) {
       const [a, b] = this.groundRange;

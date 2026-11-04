@@ -136,6 +136,11 @@ async fn state_columns(State(st): State<AppState>) -> ApiResult<Json<Value>> {
         "rev": col(&|p| opt(p.result.as_ref().map(|r| r.reveal), 4)),
         "ang": col(&|p| opt(p.result.as_ref().map(|r| r.angle_diff_deg), 4)),
         "outl": col(&|p| json!(p.result.as_ref().is_some_and(|r| r.outlier))),
+        "ttype": col(&|p| json!(p.tracker_type)),
+        "flood": col(&|p| opt(p.flood, 3)),
+        "flvl": col(&|p| opt(p.flood_level, 4)),
+        "mintop": col(&|p| opt(p.min_top, 4)),
+        "mta": col(&|p| json!(p.result.as_ref().is_some_and(|r| r.min_top_active))),
     });
     Ok(Json(json!({ "piles": piles, "trackers": state.trackers })))
 }

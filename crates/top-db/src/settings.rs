@@ -4,6 +4,17 @@
 use serde::{Deserialize, Serialize};
 use top_core::Params;
 
+/// What a pile's flood value means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FloodMode {
+    /// Water depth above the ground at the pile (m): water level = ground + value.
+    #[default]
+    Depth,
+    /// Water surface elevation (m, same datum as the ground elevations).
+    Elevation,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -30,6 +41,12 @@ pub struct Settings {
     pub offset_reject_m: f64,
     /// Warn when a new elevation differs from the previous one by more than this (m).
     pub jump_warn_m: f64,
+
+    /// How flood values are read.
+    pub flood_mode: FloodMode,
+    /// Required height of the top of pile above the flood water level (m).
+    /// The lowest allowed top of a pile is `water level + flood_clearance_m`.
+    pub flood_clearance_m: f64,
 }
 
 impl Default for Settings {
@@ -46,6 +63,8 @@ impl Default for Settings {
             offset_warn_m: 0.10,
             offset_reject_m: 1.0,
             jump_warn_m: 0.30,
+            flood_mode: FloodMode::Depth,
+            flood_clearance_m: 0.0,
         }
     }
 }
@@ -73,8 +92,26 @@ impl Settings {
             "max_angle_deg": self.max_angle_deg,
             "max_cut_fill": self.max_cut_fill,
             "grading_threshold": self.grading_threshold,
+            "flood_mode": self.flood_mode,
+            "flood_clearance_m": self.flood_clearance_m,
         })
         .to_string()
+    }
+
+    /// Flood water level at a pile (m, absolute), from its flood value and the
+    /// ground elevation in use.
+    pub fn flood_water_level(&self, ground: f64, flood: Option<f64>) -> Option<f64> {
+        let v = flood.filter(|v| v.is_finite())?;
+        Some(match self.flood_mode {
+            FloodMode::Depth => ground + v,
+            FloodMode::Elevation => v,
+        })
+    }
+
+    /// Lowest allowed top of pile: flood water level + clearance.
+    pub fn min_top(&self, ground: f64, flood: Option<f64>) -> Option<f64> {
+        self.flood_water_level(ground, flood)
+            .map(|w| w + self.flood_clearance_m)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -90,6 +127,9 @@ impl Settings {
             if !(v.is_finite() && v >= 0.0) {
                 return Err(format!("{name} must be a number >= 0"));
             }
+        }
+        if !self.flood_clearance_m.is_finite() || self.flood_clearance_m.abs() > 20.0 {
+            return Err("flood_clearance_m must be a number between -20 and 20".into());
         }
         if self.offset_warn_m > self.offset_reject_m {
             return Err("offset_warn_m must not exceed offset_reject_m".into());
