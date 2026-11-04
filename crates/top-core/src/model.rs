@@ -14,6 +14,9 @@ pub struct Pile {
     pub northing: f64,
     /// Ground elevation from the LIDAR survey (m).
     pub z_lidar: f64,
+    /// Lowest allowed top of pile (m, absolute), e.g. flood water level plus
+    /// clearance. `None` when the pile has no such requirement.
+    pub min_top: Option<f64>,
 }
 
 /// All piles of one tracker, ordered along the tracker (increasing Northing).
@@ -81,6 +84,7 @@ mod tests {
             easting: 100.0,
             northing: n,
             z_lidar: z,
+            min_top: None,
         }
     }
 

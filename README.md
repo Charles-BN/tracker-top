@@ -1,26 +1,225 @@
 # tracker-top
 
-Pile top-of-pile (ToP) height optimisation for single-axis solar trackers. A Rust port of
-`SLSQP_ToP.py`, built to be fast, shareable as a single executable, and reusable on other projects.
+Pile top-of-pile (ToP) height optimisation for single-axis solar trackers, with a master pile
+database, daily survey import and a 3D view. A Rust port of `SLSQP_ToP.py`, built to be fast,
+shareable as a single executable, and reusable on other projects.
 
-Given the LIDAR ground elevation at every pile, it picks the ToP height of each pile so that the
-tracker follows the terrain as closely as possible while keeping
+Three ways to run it, one code base:
 
-- the angle change between two consecutive spans below the limit (default 0.70 deg; the NX Horizon XTR limit is 0.75 deg),
-- the reveal inside its window (default 1.20 to 1.60 m around a 1.45 m nominal),
-- cut/fill only where the first two cannot otherwise be met.
+- **Browser version**: a web page (Edge, Chrome). The whole program runs inside the page
+  (WebAssembly) and the database is stored in that browser, on that computer; nothing is sent to a
+  server and nothing is installed. For computers that may not run programs.
+- **`tracker-top`**: the desktop application. One executable that opens the same page in your
+  browser, with the database in a file next to it.
+- **`top`**: the original command-line optimiser (CSV in, CSV out), unchanged.
 
-## Usage
+## Getting it
+
+- **Download**: every push builds Windows, macOS and Linux versions. Open the repository's
+  *Actions* tab, choose the latest *build* run and download `tracker-top-windows-x64` (or the
+  macOS/Linux one) from *Artifacts*. Tags such as `v0.2.0` also publish them as a release.
+  Windows may warn that the program is unsigned: *More info* → *Run anyway*.
+- **Build it yourself** (needs [Rust](https://rustup.rs)):
+
+  ```
+  cargo build --release
+  ./target/release/tracker-top          # the application
+  ./target/release/top --help           # the command-line optimiser
+  ```
+
+## Browser version
+
+Open the site (see *Publishing the browser version*), then use it exactly like the desktop
+application below. Differences:
+
+- The database lives in the browser's storage for that site, on that computer. **Settings →
+  Database → Download a copy** regularly: clearing the browser's site data, or using another
+  browser or computer, starts from an empty database. *Open a database file* loads a copy (from the
+  browser version or the desktop program, which share the same file format).
+- The watch folder (Settings) is chosen with the browser's folder picker (Edge, Chrome) and works
+  while the page is open.
+- Calculations run on one processor core: importing and optimising the 36,913-pile master list
+  takes about 3 s.
+
+### Publishing the browser version
+
+The browser version is a folder of static files (`scripts/build-web.sh` builds it into
+`target/web-dist/`; it needs `rustup target add wasm32-unknown-unknown` and
+`cargo install wasm-bindgen-cli --version 0.2.130 --locked`). Any web server can host it; it does
+not work opened from disk (`file://`).
+
+With GitHub Pages: in the repository, *Settings → Pages → Source: GitHub Actions* (on a private
+repository this needs a paid GitHub plan). The *browser version* workflow then publishes it at
+`https://<account>.github.io/tracker-top/` on every push to `main`, and keeps the built folder as a
+downloadable artifact for hosting it elsewhere (e.g. a company web server).
+
+## Using the application
+
+Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the current folder
+(use `--db <file>` to choose another; one database per project) and opens
+<http://127.0.0.1:8770/>. Keep its window open while you work.
+
+1. **Import → Master pile list**, once. Columns: pile ID, Easting, Northing, pile type, colour,
+   and tracker, block, section, tracker type when available (without a Tracker column, the
+   tracker is the pile ID without its last part: `P01.02.01.05` → `P01.02.01`). Excel or CSV.
+2. **Import → LIDAR / design ground** (optional): elevations used for piles that have not been
+   surveyed yet. A master list with a ground column loads it at the same time; `Z LIDAR_CF`
+   (LIDAR with the planned cut/fill) is preferred over `Z LIDAR`, and the import report says
+   which column was used.
+3. **Import → Flood values** (optional, any time): see *Flood* below.
+4. **Import → Daily survey report**, every day, or set a **watch folder** (below).
+5. Trackers are **optimised automatically** after each import, as soon as every pile of a
+   tracker has an elevation. Only trackers whose elevations or flood values changed are
+   recomputed.
+6. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
+   **History** of imports, and **Export Excel** (sheets *Piles*, *Trackers*, *Imports*,
+   *Settings*), CSV, or **ArcGIS** (GeoPackage, see *ArcGIS* below).
+
+Tabs: *Overview* (progress by block), *Import*, *Results*, *3D view*, *History*, *Settings*
+(reveal window, angle limit, survey-matching tolerances, watch folder).
+
+### The master database
+
+One SQLite file holds everything:
+
+| Part | Rule |
+|---|---|
+| **Piles** (the core: ID, tracker, block, section, tracker type, Easting, Northing, pile type, colour) | Immutable. A later master list may only *add* new pile IDs; a file that changes an existing pile is refused whole. Enforced by database triggers, not just by the app. |
+| **Imports** (every file, with its report) | Never deleted. A survey or LIDAR import can be *voided* (with a reason); its elevations stop being used and affected trackers are re-optimised. |
+| **Elevations** (ground Z per pile per import) | Append-only. In use: the latest field survey of the pile, else its LIDAR / design value. |
+| **Flood values** (per pile per import) | Append-only, voidable. In use: the latest one. Kept out of the core so they can be loaded or corrected later. |
+| **Runs** (optimisation results) | Append-only. A tracker's current result is its latest run; results older than the current elevations or settings are flagged *out of date*. |
+
+The same file imported twice is refused (it is recognised by content, not by name).
+
+### Survey files
+
+CSV, TXT, Excel (`.xlsx`, `.xls`, `.ods`), with or without a header row:
+
+- Columns can be in any order. Headers are recognised in English and French (`Point`/`Nom`,
+  `Easting`/`X`/`Est`, `Northing`/`Y`/`Nord`, `Elevation`/`Z`/`Altitude`/`TN`, `Code`, `Date`…),
+  and the values then confirm or correct them:
+  - the **pile ID column** is the one whose values match the most piles of the master list,
+    wherever it is (e.g. point numbers first and the pile ID in the code/description column),
+    including IDs inside text such as `P01.02.01.05_TN`;
+  - **Easting / Northing** are the columns whose values equal those piles' design coordinates
+    (so PENZD, PNEZD and swapped X/Y headers all work);
+  - the **elevation** is the remaining numeric column closest to the site's ground levels.
+- Files without a header row work the same way. The import report says which column was used
+  for what.
+- `,` `;` tab or space separators; decimal comma or point; UTF-8 or Windows-1252.
+- Survey date: the one entered on the Import page, else a Date column, else the file name
+  (`2026-11-03`, `20261103`, `03.11.2026`…), else the import day.
+
+Each point is matched to a pile by ID (case-insensitive), or by position (nearest pile within
+0.5 m) when the ID is unknown. Points more than 1 m from their pile's design position are
+rejected (wrong ID), more than 0.10 m are flagged, and an elevation that changed by more than
+0.30 m since the previous survey is flagged. Control points and other non-pile points are
+skipped and listed in the import report. A file whose elevation column is `Z LIDAR` is refused
+as a survey. All tolerances are in Settings.
+
+### Flood
+
+Each pile can have a flood value (metres). Its top must stay above the flood water:
 
 ```
-cargo build --release
+lowest allowed top = flood water level + clearance
+flood water level  = ground + value        (Settings: "water depth above the ground", default)
+                   = value                 (Settings: "water level, same datum as the ground")
+```
+
+The clearance (Settings, default 0) should include the drop from the top of pile to the lowest
+module edge at maximum tilt, plus any freeboard. With no grading this raises the bottom of the
+reveal window (e.g. [1.20, 1.60] becomes [1.50, 1.60] for 1.50 m of water); if the flood needs a
+reveal above the maximum, the optimiser adds fill (tracker *Graded*), and if that would exceed
+the cut/fill cap the tracker is *Non-compliant*.
+
+Load the values with **Import → Flood values** (pile ID plus a column such as `Flood`,
+`Flood depth (m)`, `Flood level`, `Inondation`, `PHE`), or as a `Flood` column of the master list.
+A newer file replaces older values; a wrong one can be voided. Results show the flood level in
+the tracker profile (dashed line, raised band), the pile table (▲ = raised), the 3D view (water
+surface, *Flood* colouring) and the Excel export.
+
+### Set-out (new x, y of each pile)
+
+The layout's distance between two consecutive piles is the length of the torque-tube span
+between them (the layout is drawn flat: spans are nominal lengths such as 9.415 m). Once the tops
+are optimised, a span between tops that differ by `dz` covers only `sqrt(L² - dz²)` on the ground,
+so the piles must move along the tracker:
+
+- the **motor pile** (pile type `HMP`/`SMP`…, or "Motor") keeps its design position; a tracker
+  without exactly one motor pile is anchored on its middle pile;
+- the other piles slide along the tracker axis towards it, span by span;
+- the tracker is **re-optimised on the new spacing** until the positions move by less than
+  0.1 mm, then **verified** at the final positions: true angle changes within the limit (else the
+  tracker is *Non-compliant*), and every span's length along the tube equal to its design length
+  (*Span check*).
+
+Results show the set-out Easting/Northing and the shift (mm) of every pile, the fixed pile and the
+largest shift of each tracker; piles moving more than 0.10 m are highlighted (Settings → Set-out,
+where the calculation can also be turned off). On the project master file the largest shift of a
+tracker is 11.5 mm (median), 98 mm (95th percentile) and 215 mm at most (steep 15-pile trackers).
+The Excel/CSV exports carry `Set-out Easting`, `Set-out Northing`, `Shift Along Tracker (m)`, and
+the ArcGIS export draws piles at their set-out position.
+
+### ArcGIS
+
+The **ArcGIS** button downloads a GeoPackage (`.gpkg`, OGC standard) with two layers:
+
+- `piles`: 3D points at each pile's set-out position and top of pile (design position and ground
+  when not optimised yet), with every attribute: IDs, tracker type, pile type and colour, design and
+  set-out coordinates and shift, ground elevation and its source, survey offset, flood value /
+  level / minimum top, cut/fill, ToP, reveal, angle change, tracker status;
+- `trackers`: 3D lines through the pile tops, with status, largest angle and cut/fill, flood counts.
+
+The coordinate system is **GDA2020 / MGA zone 56 (EPSG:7856)** by default; another one can be set in
+**Settings → ArcGIS export** (EPSG code). Then:
+
+- **ArcGIS Pro**: *Add Data* → the `.gpkg` file (or drag it onto the map / a local scene).
+- **ArcGIS Online / Portal**: *Content → New item* → the `.gpkg` → *Create a hosted feature layer*.
+  To publish a newer export later and keep the same layer and its maps, open the layer's item
+  page → *Update data* → *Overwrite entire layer* with the new file.
+- **QGIS** opens it directly too.
+
+### Watch folder and Trimble Connect
+
+`tracker-top` can import survey files automatically: in **Settings → Watch folder** (or with
+`--watch <folder>`), give a folder on the computer. Every 30 s it imports each new CSV/TXT/Excel
+file found there or in its subfolders as a field survey, then re-optimises. Files already
+imported are skipped; files still being written wait for the next scan; results appear in
+Settings and on the Overview.
+
+To gather surveys from **Trimble Connect** with no programming, install **Trimble Connect Sync**
+(or Trimble Connect for Windows) on the computer running `tracker-top`, sync the project folder
+where the surveyors upload their daily reports, and point the watch folder at the local copy.
+
+A direct connection to the Trimble Connect REST API (OAuth sign-in, polling a project folder)
+is also possible and would remove the sync client, but needs an application registered with
+Trimble; see *Not done yet*.
+
+### 3D view
+
+Ground mesh triangulated through the pile ground elevations (coloured by elevation or by
+cut/fill), each pile drawn from its ground to its top, each tracker as a line through its pile
+tops. Colour piles by tracker status, angle change, reveal, cut/fill, elevation source, flood,
+or pile type in the site colours of the master list's Color column (one colour per type);
+translucent flood water surface; adjustable vertical exaggeration; filter by block; go to a
+tracker; click a pile for its details. Click legend entries to hide or show a category.
+
+### Options
+
+```
+tracker-top [--db file] [--port 8770] [--host 127.0.0.1] [--watch folder]
+            [--watch-interval 30] [--threads N] [--no-browser]
+```
+
+`--host 0.0.0.0` lets colleagues on the same network open it at `http://<your-computer>:8770/`.
+There is no password: use it only on a trusted network.
+
+## Command-line optimiser
+
+```
 ./target/release/top optimize -i piles.csv -o results.csv [--block 1] [--max-angle 0.70] [--threads N]
-./target/release/top --help
-```
-
-Try it on the bundled sample (synthetic terrain over real pile positions):
-
-```
 ./target/release/top optimize -i testdata/sample_block01_synthetic.csv -o /tmp/out.csv
 ```
 
@@ -29,7 +228,14 @@ Output columns follow the Python script (`NEW_ZG, CF, Optimized ToP, Final Revea
 plus `Status` per tracker: `Compliant`, `Graded` (needs cut/fill), `NonCompliant`, `Skipped` (< 3 piles), `InvalidInput`.
 Exit code 3 means some trackers could not be made compliant.
 
-## How it works
+## How the optimisation works
+
+It picks the ToP height of each pile so that the tracker follows the terrain as closely as
+possible while keeping
+
+- the angle change between two consecutive spans below the limit (default 0.70 deg; the NX Horizon XTR limit is 0.75 deg),
+- the reveal inside its window (default 1.20 to 1.60 m around a 1.45 m nominal),
+- cut/fill only where the first two cannot otherwise be met.
 
 Per tracker, a convex QP in the ToP heights `y` and cut/fill `c`:
 
@@ -37,6 +243,7 @@ Per tracker, a convex QP in the ToP heights `y` and cut/fill `c`:
 minimise   sum (y_i - c_i - z_i - reveal_nominal)^2 + lambda * sum c_i^2
 subject to reveal_min <= y_i - z_i - c_i <= reveal_max,   |c_i| <= max_cut_fill
            |slope_i - slope_{i-1}| <= max_angle (rad)
+           y_i >= min_top_i          (piles with a flood value: water level + clearance)
 ```
 
 The slope-difference constraint is linear in `y` and always at least as strict as the true `atan2` angle
@@ -44,28 +251,62 @@ limit (atan is 1-Lipschitz), so results are never optimistic. True angles are re
 every solve. Cut/fill carries a large penalty, which replaces the old iterative +/-0.1 m grading loop.
 
 The solver is a small dense OSQP-style ADMM (`qp.rs`) behind the `QpSolver` trait, so `clarabel` or another
-solver can be dropped in. The crates have no external dependencies.
+solver can be dropped in. `top-core` has no external dependencies.
 
 ## Layout
 
 ```
 crates/top-core   model, params, QP solver, optimiser, CSV I/O (library, std only)
 crates/top-cli    `top` command-line tool (multi-threaded with std::thread::scope)
+crates/top-db     master database (SQLite): import, matching, runs, Excel/CSV export
+crates/top-db     ...including api.rs, the request handler shared by the desktop and browser versions
+crates/top-app    `tracker-top`: local web server (axum) + web page (web/, built into the exe)
+crates/top-web    browser version: the engine compiled to WebAssembly + worker/bridge (www/)
+                  3D with three.js r170 and delaunator, bundled in web/vendor (MIT / ISC)
 testdata/         small synthetic sample
 ```
 
 ## Verification done
 
-- 17 unit tests (solver on analytic problems, flat/sloped/dipped terrain, randomised trackers, parallel == serial) and 2 CLI tests.
-- Full run on 36,913 piles / 2,792 trackers (synthetic terrain over real geometry): 0.2 s on 2 cores; independent
-  recheck of angles, reveal and cut/fill in Python found 0 violations.
-- Against SciPy SLSQP (original formulation) on 150 trackers needing no grading: ToP heights agree to a median
-  of 0.05 mm, max 0.22 mm.
+- Browser version, in a real browser (Chromium) with the project master file: import and optimisation
+  in 2.8 s, survey import, Excel / ArcGIS / CSV / database downloads, data and settings kept after a
+  reload, empty database then restore from a downloaded copy; also served from a sub-folder as
+  GitHub Pages does.
+- 57 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+  trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable,
+  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 28 database (file formats and header spellings, columns recognised from their values in any
+  order, immutability triggers, duplicate files, ID and position matching, offset and jump checks,
+  voiding, incremental re-runs, settings changes, flood layer in both modes, set-out, upgrade of a
+  version 2 database in place, Excel and GeoPackage exports, the shared request handler, database
+  copy and restore).
+- Set-out on the project master file: all 2,792 trackers anchored on their motor pile; an
+  independent recheck from the exported Excel file finds every 3D span equal to its design length,
+  no motor pile moved, and true angles within 0.70° at the set-out positions.
+- GeoPackage export of the project master file read back with GDAL 3.12: `piles` (36,913 Point Z) and
+  `trackers` (2,792 LineString Z) in EPSG:7856; the coordinate systems written (GDA2020 and GDA94 / MGA,
+  WGS 84 and ETRS89 / UTM, Lambert-93) each read back as their EPSG definition.
+- Project master file `Piles_MUS_meanwidth_v1_2910_ZLIDARCF.xlsx` (36,913 piles, 2,792 trackers,
+  41 blocks): imported and optimised in 0.8 s on `Z LIDAR_CF`: 2,791 compliant, 1 graded (max cut/fill
+  0.03 m). The same piles on raw `Z LIDAR`: 64 graded (max 0.68 m), consistent with `Z LIDAR_CF`
+  containing the planned earthworks. With a synthetic flood plane over the lowest area (472 piles, up
+  to 2.2 m deep): 57 trackers re-optimised in 0.17 s, 22 piles raised, 14 trackers graded (fill up to
+  0.60 m = 2.20 - 1.60), no top below its flood minimum.
+- Optimiser, full run on 36,913 piles / 2,792 trackers (synthetic terrain over real geometry): 0.2 s on
+  2 cores; independent recheck of angles, reveal and cut/fill in Python found 0 violations. Against SciPy
+  SLSQP on 150 trackers needing no grading: ToP heights agree to a median of 0.05 mm, max 0.22 mm.
+- Application, end to end on the sample (master list, headerless survey export, French `;`-CSV survey via
+  the watch folder, LIDAR, voiding) and at 37,083 piles / 2,914 trackers: master import 0.24 s, LIDAR import
+  + optimisation of every tracker 0.56 s, page data 0.3 s, Excel export 1.2 s, 3D view ready in < 1 s
+  (4 cores, headless browser).
 
 ## Not done yet
 
-- Excel input/output (`calamine`, `rust_xlsxwriter`): needs crates.io, which was not reachable when this was started.
-  Until then, export the sheet to CSV.
+- Direct Trimble Connect API connection (use Trimble Connect Sync + the watch folder meanwhile).
 - Pile-type logic (`pile_name` in the Python script: HMP-31/SMP-31 above 6 % ground slope, minimum embedment).
-- 3D viewer (Bevy + egui) and the 2D profile viewer.
-- Validation on real LIDAR data: `Piles_MUS_meanwidth_v1_0910.xlsx` has no `Z LIDAR` column.
+- Piles already installed: hold their measured ToP fixed when re-optimising a tracker.
+- Validation on real survey reports and real flood values (none available yet).
+- Browser version tested in Chromium (desktop Edge/Chrome); not yet on Firefox or Safari.
+- Comparing as-built pile positions (survey after piling) with the set-out positions.
+- Direct update of an ArcGIS Online layer (needs an ArcGIS credential).
+- Databases made by the 0.2.0 preview (schema 1) are refused: start a new one and import the master
+  list again. Version 0.3.0 databases (schema 2) are upgraded in place.

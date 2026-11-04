@@ -1,0 +1,22 @@
+[package]
+name = "top-web"
+description = "tracker-top in the browser: the database and optimiser compiled to WebAssembly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+top-db.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "=0.2.130"
+
+# Browser builds take the time from JavaScript (std's clock is unavailable there).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
+rust_xlsxwriter = { version = "0.102", features = ["wasm"] }
+# SQLite in the browser takes time, randomness and local time from JavaScript.
+sqlite-wasm-rs = { version = "0.6", features = ["wasm-bindgen"] }

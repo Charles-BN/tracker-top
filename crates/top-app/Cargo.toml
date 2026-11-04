@@ -1,0 +1,20 @@
+[package]
+name = "top-app"
+description = "Local web interface for the master pile database and ToP optimiser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tracker-top"
+path = "src/main.rs"
+
+[dependencies]
+top-core.workspace = true
+top-db.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+open = "5"

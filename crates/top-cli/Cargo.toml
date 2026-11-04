@@ -10,4 +10,4 @@ name = "top"
 path = "src/main.rs"
 
 [dependencies]
-top-core = { path = "../top-core" }
+top-core.workspace = true
