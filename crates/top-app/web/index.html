@@ -171,7 +171,15 @@
       </div>
       <div class="card">
         <div class="card-head"><h2>Watch folder</h2><span class="muted">Automatic import, for example from Trimble Connect Sync.</span></div>
-        <label class="field"><span>Folder on this computer</span>
+        <div id="watch-browser" class="browser-only" hidden>
+          <p class="ink2">Choose a folder on this computer, for example your Trimble Connect Sync folder. While this page is open, every new CSV / TXT / Excel file in it (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Works in Edge and Chrome.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button type="button" class="btn" id="watch-choose">Choose a folder…</button>
+            <button type="button" class="btn" id="watch-resume" hidden>Resume watching</button>
+            <button type="button" class="btn" id="watch-stop" hidden>Stop watching</button>
+          </div>
+        </div>
+        <label class="field desktop-only"><span>Folder on this computer</span>
           <input type="text" id="watch-folder" placeholder="C:\Users\me\Trimble Connect\Project\Survey" style="width:100%">
           <small>Every new CSV / TXT / Excel file that appears in this folder (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Leave empty to turn it off.</small>
         </label>
@@ -182,6 +190,16 @@
         <button class="btn" type="button" id="settings-defaults">Restore defaults</button>
       </div>
     </form>
+    <div class="card" style="margin-top:16px" id="db-card">
+      <div class="card-head"><h2>Database</h2><span class="muted" id="db-where"></span></div>
+      <p class="ink2" id="db-help"></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <a class="btn" href="api/backup.db" download>Download a copy</a>
+        <button type="button" class="btn browser-only" id="db-open" hidden>Open a database file…</button>
+        <button type="button" class="btn danger browser-only" id="db-reset" hidden>Start a new, empty database…</button>
+      </div>
+      <input type="file" id="db-file" accept=".db,.sqlite,.sqlite3" hidden>
+    </div>
   </section>
 </main>
 

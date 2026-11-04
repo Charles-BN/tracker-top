@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 use top_core::{Pile, Tracker, default_solver, normalize_block, optimize_all};
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -364,6 +363,43 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(db)?;
         Self::init(conn, path.to_path_buf())
+    }
+
+    /// Open a database from a copy of its file (a backup, or the browser's
+    /// stored copy). It lives in memory; `to_bytes` gives the file back.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 100 || &bytes[..16] != b"SQLite format 3\0" {
+            return Err("this file is not a tracker-top database".into());
+        }
+        let mut data = bytes.to_vec();
+        // A copy in memory uses a rollback journal, not WAL (header bytes 18-19).
+        data[18] = 1;
+        data[19] = 1;
+        let mut conn = Connection::open_in_memory().map_err(db)?;
+        conn.deserialize_read_exact("main", &data[..], data.len(), false)
+            .map_err(|e| format!("cannot read the database file: {e}"))?;
+        let is_ours: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')
+                    AND EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'piles')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !is_ours {
+            return Err("this file is not a tracker-top database".into());
+        }
+        Self::init(conn, PathBuf::from("this browser"))
+    }
+
+    /// The whole database as the bytes of a database file.
+    pub fn to_bytes(&mut self) -> Result<Vec<u8>> {
+        Ok(self.conn.serialize("main").map_err(db)?.to_vec())
+    }
+
+    /// Name shown for where the database lives.
+    pub fn set_label(&mut self, label: &str) {
+        self.path = PathBuf::from(label);
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -1686,7 +1722,7 @@ impl Store {
     /// its latest run, or every complete tracker when `force` is set. Trackers
     /// with a pile that has no elevation yet are left waiting.
     pub fn optimize(&mut self, force: bool, trigger: &str, threads: usize) -> Result<RunSummary> {
-        let started = Instant::now();
+        let started = chrono::Utc::now();
         let settings = self.settings()?;
         let params = settings.params();
         let params_json = settings.params_json();
@@ -1739,7 +1775,7 @@ impl Store {
             } else {
                 "No tracker has an elevation for every pile yet: nothing to optimise.".into()
             };
-            summary.duration_ms = started.elapsed().as_millis() as u64;
+            summary.duration_ms = (chrono::Utc::now() - started).num_milliseconds().max(0) as u64;
             return Ok(summary);
         }
 
@@ -1817,7 +1853,7 @@ impl Store {
         summary.run_id = Some(run_id);
         summary.created_at = created_at;
         summary.trackers_run = todo.len();
-        summary.duration_ms = started.elapsed().as_millis() as u64;
+        summary.duration_ms = (chrono::Utc::now() - started).num_milliseconds().max(0) as u64;
         summary.message = format!(
             "Optimised {} trackers in {} ms.",
             todo.len(),

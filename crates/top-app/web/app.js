@@ -33,7 +33,20 @@ const swatch = (c) => (c ? `<span class="sw-dot" style="background:${esc(siteCol
 
 // ---------------------------------------------------------------- API
 
+// Browser version: the engine runs in the page (WebAssembly) instead of the
+// desktop program; see browser.js. Set by the browser build's index.html.
+const BROWSER = !!window.TRACKER_TOP_BROWSER;
+let browser = null;
+
 async function api(method, url, body, raw = false) {
+  if (BROWSER) {
+    const r = await browser.request(method, url, body, raw);
+    const text = new TextDecoder().decode(r.body);
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    if (r.status >= 400) throw new Error((data && data.error) || text || `error ${r.status}`);
+    return data;
+  }
   const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.body = raw ? body : JSON.stringify(body);
@@ -140,7 +153,9 @@ function stackBar(counts, total, thin = false) {
 }
 
 renderers.overview = async () => {
-  const { summary: s, watch, watch_folder } = await loadSummary();
+  const { summary: s, watch: w0, watch_folder: wf } = await loadSummary(true);
+  const watch = BROWSER ? browser.watch : w0;
+  const watch_folder = BROWSER ? browser.watch.folder : wf;
   const el = $('#tab-overview');
   if (!s.piles) {
     el.innerHTML = `<div class="card empty">
@@ -565,6 +580,55 @@ function settingsInputs(fields, values) {
     <input type="number" step="any" name="${k}" value="${values[k]}" required><small>${help}</small></label>`).join('');
 }
 
+function renderDatabaseCard(sum) {
+  if (BROWSER) {
+    $('#db-where').textContent = 'Stored in this browser';
+    $('#db-help').textContent = 'Everything is stored in this browser, on this computer only: nothing is sent to a server. Download a copy regularly as a backup. Clearing this site\'s data in the browser, or using another browser or computer, starts from an empty database. A copy can be opened here (Open a database file) or in the desktop program (save it as tracker-top.db next to tracker-top.exe).';
+  } else {
+    $('#db-where').textContent = sum.summary.db_path;
+    $('#db-help').textContent = 'Everything is in this one file. Download a copy as a backup (or copy the file while the program is closed). A copy can also be opened in the browser version (Settings > Database > Open a database file).';
+  }
+}
+
+function renderBrowserWatch() {
+  const w = browser.watch;
+  const supported = browser.folderAccessSupported();
+  $('#watch-choose').disabled = !supported;
+  $('#watch-choose').textContent = w.folder ? 'Choose another folder…' : 'Choose a folder…';
+  $('#watch-resume').hidden = !w.needs_permission;
+  $('#watch-stop').hidden = !w.folder;
+}
+
+if (BROWSER) {
+  $('#watch-choose').addEventListener('click', async () => {
+    try { await browser.chooseFolder(); toast(`Watching ${browser.watch.folder}.`); } catch (e) { if (e.name !== 'AbortError') toast(e.message, true); }
+    await renderers.settings();
+  });
+  $('#watch-resume').addEventListener('click', async () => { await browser.resumeWatching(); await renderers.settings(); });
+  $('#watch-stop').addEventListener('click', async () => { await browser.stopWatching(); await renderers.settings(); });
+  $('#db-open').addEventListener('click', () => { $('#db-file').value = ''; $('#db-file').click(); });
+  $('#db-file').addEventListener('change', () => {
+    const file = $('#db-file').files[0];
+    if (!file) return;
+    openDialog(`<h2>Open ${esc(file.name)}?</h2><p class="ink2" style="margin-top:8px">It replaces the database stored in this browser. Download a copy of the current one first if you may need it.</p>`,
+      [['Cancel', null], ['Open it', async () => {
+        await browser.restore(file);
+        toast(`${file.name} opened.`);
+        await refresh();
+      }, 'danger']]);
+  });
+  $('#db-reset').addEventListener('click', () => {
+    openDialog('<h2>Start a new, empty database?</h2><p class="ink2" style="margin-top:8px">Everything stored in this browser (master list, surveys, results) is deleted. Download a copy first if you may need it.</p>',
+      [['Cancel', null], ['Delete and start again', async () => {
+        await browser.reset();
+        toast('Empty database started.');
+        await refresh();
+      }, 'danger']]);
+  });
+}
+document.querySelectorAll('.browser-only').forEach((el) => { el.hidden = !BROWSER; });
+document.querySelectorAll('.desktop-only').forEach((el) => { el.hidden = BROWSER; });
+
 renderers.settings = async () => {
   const [{ settings, defaults, watch_folder }, sum] = await Promise.all([api('GET', 'api/settings'), loadSummary(true)]);
   $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, settings);
@@ -578,18 +642,22 @@ renderers.settings = async () => {
   };
   setFlood(settings);
   $('#watch-folder').value = watch_folder || '';
+  renderDatabaseCard(sum);
   $('#settings-defaults').onclick = () => {
     $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, defaults);
     $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, defaults);
     setFlood(defaults);
     toast('Defaults restored in the form. Click Save settings to apply them.');
   };
-  const w = sum.watch;
+  const w = BROWSER ? browser.watch : sum.watch;
+  if (BROWSER) renderBrowserWatch();
   const events = (w.events || []).map((e) => `<tr><td class="muted">${esc(e.at)}</td><td>${esc(e.file)}</td><td>${e.accepted ? '<span class="pill ok">✓ Imported</span>' : '<span class="pill bad">✕ Not imported</span>'}</td><td class="ink2">${esc(e.message)}</td></tr>`).join('');
-  $('#watch-status').innerHTML = watch_folder
+  $('#watch-status').innerHTML = (BROWSER ? w.folder : watch_folder)
     ? `<p class="ink2">${w.error ? `<span style="color:var(--critical-text)">${esc(w.error)}</span>` : `Last scan: ${esc(w.last_scan || 'pending')} · ${int(w.files_seen)} files checked`}</p>
-       ${events ? `<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Time</th><th>File</th><th>Result</th><th>Details</th></tr></thead><tbody>${events}</tbody></table></div>` : '<p class="muted" style="margin-top:6px">No new file seen since the program started.</p>'}`
-    : '';
+       ${events ? `<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Time</th><th>File</th><th>Result</th><th>Details</th></tr></thead><tbody>${events}</tbody></table></div>` : `<p class="muted" style="margin-top:6px">No new file seen since ${BROWSER ? 'the page was opened' : 'the program started'}.</p>`}`
+    : (BROWSER && !browser.folderAccessSupported()
+      ? '<p class="muted">This browser cannot read folders: use Microsoft Edge or Google Chrome for the watch folder. Files can always be dropped on the Import page.</p>'
+      : '');
 };
 
 $('#settings-form').addEventListener('submit', async (e) => {
@@ -605,7 +673,7 @@ $('#settings-form').addEventListener('submit', async (e) => {
   const btn = e.submitter;
   if (btn) btn.disabled = true;
   try {
-    const res = await api('PUT', 'api/settings', { settings, watch_folder: $('#watch-folder').value.trim() || null });
+    const res = await api('PUT', 'api/settings', { settings, watch_folder: BROWSER ? null : ($('#watch-folder').value.trim() || null) });
     toast(`Settings saved. ${runText(res.run)}`);
     await refresh();
   } catch (err) {
@@ -627,7 +695,7 @@ async function poll() {
       cache.summary = after;
       cache.state = null;
       updateHeader();
-      const ev = after.watch.events?.[0];
+      const ev = (BROWSER ? browser.watch : after.watch).events?.[0];
       if (ev) toast(`Watch folder: ${ev.file}: ${ev.message}`, !ev.accepted);
       if (current !== 'import') await show(current, true);
     }
@@ -635,9 +703,31 @@ async function poll() {
 }
 
 (async () => {
+  if (BROWSER) {
+    document.body.classList.add('browser-mode');
+    browser = await import('./browser.js');
+    browser.keepStorage();
+    browser.onWatchEvent(() => poll(true));
+    await browser.restoreWatch();
+    // Exports and the database copy are generated in the page, then saved.
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest('a[href^="api/"]');
+      if (!a) return;
+      e.preventDefault();
+      a.setAttribute('aria-busy', 'true');
+      browser.download(a.getAttribute('href'))
+        .catch((err) => toast(err.message, true))
+        .finally(() => a.removeAttribute('aria-busy'));
+      toast('Preparing the download…');
+    });
+  }
   try {
     await loadSummary();
     updateHeader();
+    if (BROWSER) {
+      const n = await browser.notice();
+      if (n) toast(n, true);
+    }
   } catch (e) {
     toast(`Cannot reach the program: ${e.message}`, true);
   }

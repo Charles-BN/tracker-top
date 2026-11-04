@@ -1,0 +1,59 @@
+# Builds the browser version of tracker-top and publishes it with GitHub Pages.
+#
+# One-time setup in the repository: Settings > Pages > Build and deployment >
+# Source: "GitHub Actions". (Pages on a private repository needs a paid GitHub
+# plan. The published site is public but holds only the app: project data
+# stays in each user's own browser.)
+#
+# Every run also keeps the built site as a downloadable artifact
+# ("tracker-top-browser"), to host it elsewhere (any static web server).
+name: browser version
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-bindgen (same version as the crate)
+        run: cargo install wasm-bindgen-cli --version 0.2.130 --locked
+      - name: Build the browser version
+        run: ./scripts/build-web.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracker-top-browser
+          path: target/web-dist
+          include-hidden-files: true
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: target/web-dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

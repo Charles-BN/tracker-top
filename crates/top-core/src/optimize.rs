@@ -416,7 +416,8 @@ fn optimize_at(tracker: &Tracker, params: &Params, solver: &dyn QpSolver) -> Tra
 }
 
 /// Optimise all trackers on `threads` worker threads. Results are returned in
-/// the same order as `trackers`.
+/// the same order as `trackers`. With one thread no thread is started, so this
+/// also runs where threads are unavailable (WebAssembly in a browser).
 pub fn optimize_all(
     trackers: &[Tracker],
     params: &Params,
@@ -424,6 +425,12 @@ pub fn optimize_all(
     threads: usize,
 ) -> Vec<TrackerResult> {
     let threads = threads.max(1).min(trackers.len().max(1));
+    if threads == 1 {
+        return trackers
+            .iter()
+            .map(|t| optimize_tracker(t, params, solver))
+            .collect();
+    }
     let next = AtomicUsize::new(0);
 
     let mut slots: Vec<Option<TrackerResult>> = (0..trackers.len()).map(|_| None).collect();

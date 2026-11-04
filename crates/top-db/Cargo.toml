@@ -10,7 +10,7 @@ top-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "serialize"] }
 calamine = "0.38"
 rust_xlsxwriter = "0.102"
 sha2 = "0.11"

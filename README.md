@@ -4,11 +4,13 @@ Pile top-of-pile (ToP) height optimisation for single-axis solar trackers, with 
 database, daily survey import and a 3D view. A Rust port of `SLSQP_ToP.py`, built to be fast,
 shareable as a single executable, and reusable on other projects.
 
-Two programs:
+Three ways to run it, one code base:
 
-- **`tracker-top`**: the application. One executable that opens a web page in your browser
-  (it runs on your computer, nothing goes online). Import files, read results, view the site in
-  3D, export to Excel.
+- **Browser version**: a web page (Edge, Chrome). The whole program runs inside the page
+  (WebAssembly) and the database is stored in that browser, on that computer; nothing is sent to a
+  server and nothing is installed. For computers that may not run programs.
+- **`tracker-top`**: the desktop application. One executable that opens the same page in your
+  browser, with the database in a file next to it.
 - **`top`**: the original command-line optimiser (CSV in, CSV out), unchanged.
 
 ## Getting it
@@ -24,6 +26,32 @@ Two programs:
   ./target/release/tracker-top          # the application
   ./target/release/top --help           # the command-line optimiser
   ```
+
+## Browser version
+
+Open the site (see *Publishing the browser version*), then use it exactly like the desktop
+application below. Differences:
+
+- The database lives in the browser's storage for that site, on that computer. **Settings →
+  Database → Download a copy** regularly: clearing the browser's site data, or using another
+  browser or computer, starts from an empty database. *Open a database file* loads a copy (from the
+  browser version or the desktop program, which share the same file format).
+- The watch folder (Settings) is chosen with the browser's folder picker (Edge, Chrome) and works
+  while the page is open.
+- Calculations run on one processor core: importing and optimising the 36,913-pile master list
+  takes about 3 s.
+
+### Publishing the browser version
+
+The browser version is a folder of static files (`scripts/build-web.sh` builds it into
+`target/web-dist/`; it needs `rustup target add wasm32-unknown-unknown` and
+`cargo install wasm-bindgen-cli --version 0.2.130 --locked`). Any web server can host it; it does
+not work opened from disk (`file://`).
+
+With GitHub Pages: in the repository, *Settings → Pages → Source: GitHub Actions* (on a private
+repository this needs a paid GitHub plan). The *browser version* workflow then publishes it at
+`https://<account>.github.io/tracker-top/` on every push to `main`, and keeps the built folder as a
+downloadable artifact for hosting it elsewhere (e.g. a company web server).
 
 ## Using the application
 
@@ -231,19 +259,26 @@ solver can be dropped in. `top-core` has no external dependencies.
 crates/top-core   model, params, QP solver, optimiser, CSV I/O (library, std only)
 crates/top-cli    `top` command-line tool (multi-threaded with std::thread::scope)
 crates/top-db     master database (SQLite): import, matching, runs, Excel/CSV export
+crates/top-db     ...including api.rs, the request handler shared by the desktop and browser versions
 crates/top-app    `tracker-top`: local web server (axum) + web page (web/, built into the exe)
+crates/top-web    browser version: the engine compiled to WebAssembly + worker/bridge (www/)
                   3D with three.js r170 and delaunator, bundled in web/vendor (MIT / ISC)
 testdata/         small synthetic sample
 ```
 
 ## Verification done
 
-- 55 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+- Browser version, in a real browser (Chromium) with the project master file: import and optimisation
+  in 2.8 s, survey import, Excel / ArcGIS / CSV / database downloads, data and settings kept after a
+  reload, empty database then restore from a downloaded copy; also served from a sub-folder as
+  GitHub Pages does.
+- 57 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
   trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable,
-  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 26 database (file formats and header spellings, columns recognised from their values in any
+  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 28 database (file formats and header spellings, columns recognised from their values in any
   order, immutability triggers, duplicate files, ID and position matching, offset and jump checks,
   voiding, incremental re-runs, settings changes, flood layer in both modes, set-out, upgrade of a
-  version 2 database in place, Excel and GeoPackage exports).
+  version 2 database in place, Excel and GeoPackage exports, the shared request handler, database
+  copy and restore).
 - Set-out on the project master file: all 2,792 trackers anchored on their motor pile; an
   independent recheck from the exported Excel file finds every 3D span equal to its design length,
   no motor pile moved, and true angles within 0.70° at the set-out positions.
@@ -270,6 +305,7 @@ testdata/         small synthetic sample
 - Pile-type logic (`pile_name` in the Python script: HMP-31/SMP-31 above 6 % ground slope, minimum embedment).
 - Piles already installed: hold their measured ToP fixed when re-optimising a tracker.
 - Validation on real survey reports and real flood values (none available yet).
+- Browser version tested in Chromium (desktop Edge/Chrome); not yet on Firefox or Safari.
 - Comparing as-built pile positions (survey after piling) with the set-out positions.
 - Direct update of an ArcGIS Online layer (needs an ArcGIS credential).
 - Databases made by the 0.2.0 preview (schema 1) are refused: start a new one and import the master

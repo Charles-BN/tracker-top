@@ -162,7 +162,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -705,6 +707,8 @@ version = "0.102.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ca3d0e879a578c1313c2800ab0c6c029d38eed18098675e50341a30d32372ed"
 dependencies = [
+ "js-sys",
+ "wasm-bindgen",
  "zip",
 ]
 
@@ -860,7 +864,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36bd8e29bf08189a005b2df1df99823aa0861cabe9044e5f31ed54ca292ee618"
 dependencies = [
  "cc",
+ "js-sys",
  "rsqlite-vfs",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -939,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "top-app"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "chrono",
@@ -953,18 +959,18 @@ dependencies = [
 
 [[package]]
 name = "top-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "top-core",
 ]
 
 [[package]]
 name = "top-core"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "top-db"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "calamine",
  "chrono",
@@ -974,6 +980,18 @@ dependencies = [
  "serde_json",
  "sha2",
  "top-core",
+]
+
+[[package]]
+name = "top-web"
+version = "0.5.0"
+dependencies = [
+ "chrono",
+ "rust_xlsxwriter",
+ "serde_json",
+ "sqlite-wasm-rs",
+ "top-db",
+ "wasm-bindgen",
 ]
 
 [[package]]

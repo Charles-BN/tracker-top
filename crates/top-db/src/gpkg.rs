@@ -218,29 +218,22 @@ fn up_to_date(t: &TrackerState) -> Option<i64> {
     t.run_id.map(|_| (!t.stale) as i64)
 }
 
-/// The current state as a GeoPackage file (bytes).
+/// The current state as a GeoPackage file (bytes). Built in memory, so it
+/// works without a file system (in the browser too).
 pub fn geopackage(state: &State, settings: &Settings) -> Result<Vec<u8>, String> {
-    let path = std::env::temp_dir().join(format!(
-        "tracker-top-export-{}-{}.gpkg",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let result =
-        write(&path, state, settings).map_err(|e| format!("cannot write the GeoPackage: {e}"));
-    let bytes = result.and_then(|_| std::fs::read(&path).map_err(|e| e.to_string()));
-    let _ = std::fs::remove_file(&path);
-    bytes
+    let build = || -> rusqlite::Result<Vec<u8>> {
+        let mut c = Connection::open_in_memory()?;
+        write(&mut c, state, settings)?;
+        let data = c.serialize("main")?;
+        Ok(data.to_vec())
+    };
+    build().map_err(|e| format!("cannot write the GeoPackage: {e}"))
 }
 
-fn write(path: &std::path::Path, state: &State, settings: &Settings) -> rusqlite::Result<()> {
-    let mut c = Connection::open(path)?;
+fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Result<()> {
     c.execute_batch(
         "PRAGMA application_id = 1196444487;  -- 'GPKG'
          PRAGMA user_version = 10400;
-         PRAGMA journal_mode = OFF;
          CREATE TABLE gpkg_spatial_ref_sys (
            srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL,
            organization_coordsys_id INTEGER NOT NULL, definition TEXT NOT NULL, description TEXT);

@@ -15,6 +15,7 @@
 //! one of its piles has an elevation, and re-optimised whenever one of them
 //! changes.
 
+pub mod api;
 pub mod dates;
 pub mod export;
 pub mod gpkg;
