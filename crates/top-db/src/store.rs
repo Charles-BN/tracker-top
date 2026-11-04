@@ -2798,7 +2798,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             // The version 2 schema: today's without the set-out columns.
+            // (Git may check the file out with Windows line endings.)
             let v2 = SCHEMA
+                .replace("\r\n", "\n")
                 .replace("    max_shift     REAL,\n    span_error    REAL,\n    anchor_pile   TEXT,\n    anchor_motor  INTEGER,\n", "")
                 .replace("    set_e          REAL,\n    set_n          REAL,\n    shift          REAL,\n", "");
             assert!(!v2.contains("set_e") && !v2.contains("anchor_pile"));
