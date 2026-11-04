@@ -15,11 +15,22 @@ use top_core::{Pile, Tracker, default_solver, normalize_block, optimize_all};
 
 pub type Result<T> = std::result::Result<T, String>;
 
-/// A tracker's latest run: (run_id, created_at, status, input signature, max angle, max cut/fill).
-type LatestRun = (i64, String, String, String, f64, f64);
+/// A tracker's latest run.
+struct LatestRun {
+    run_id: i64,
+    run_at: String,
+    status: String,
+    sig: String,
+    max_angle: f64,
+    max_cut_fill: f64,
+    max_shift: Option<f64>,
+    span_error: Option<f64>,
+    anchor_pile: Option<String>,
+    anchor_motor: Option<bool>,
+}
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 fn db(e: rusqlite::Error) -> String {
     match e {
@@ -103,6 +114,10 @@ pub struct PileResultRow {
     pub min_top: Option<f64>,
     /// The top sits on that minimum: the pile was raised for flood.
     pub min_top_active: bool,
+    /// Set-out position and move along the tracker from the design position.
+    pub set_easting: Option<f64>,
+    pub set_northing: Option<f64>,
+    pub shift: Option<f64>,
 }
 
 /// Everything known about one pile right now.
@@ -154,6 +169,12 @@ pub struct TrackerState {
     pub run_at: Option<String>,
     pub max_angle_deg: Option<f64>,
     pub max_cut_fill: Option<f64>,
+    /// Set-out of the latest result: largest move along the tracker (m),
+    /// largest error of a span's length along the tube (m), the pile kept fixed.
+    pub max_shift: Option<f64>,
+    pub span_error: Option<f64>,
+    pub anchor_pile: Option<String>,
+    pub anchor_motor: Option<bool>,
     /// Piles with a flood value, and piles raised by it in the latest result.
     pub n_flood: usize,
     pub n_flood_raised: usize,
@@ -363,7 +384,7 @@ impl Store {
             )
             .ok();
         match existing.as_deref() {
-            None | Some(SCHEMA_VERSION) => {}
+            None | Some(SCHEMA_VERSION) | Some("2") => {}
             Some("1") => {
                 return Err("this database was made by a preview version of tracker-top (schema 1) \
                      and cannot be opened: start a new database and import the master pile list again"
@@ -377,9 +398,35 @@ impl Store {
             }
         }
         conn.execute_batch(SCHEMA).map_err(db)?;
+        if existing.as_deref() == Some("2") {
+            // 2 -> 3: set-out results. Nothing is lost; trackers are re-optimised
+            // on the next run because the settings signature changes.
+            conn.execute_batch(
+                "BEGIN;
+                 ALTER TABLE run_piles ADD COLUMN set_e REAL;
+                 ALTER TABLE run_piles ADD COLUMN set_n REAL;
+                 ALTER TABLE run_piles ADD COLUMN shift REAL;
+                 ALTER TABLE run_trackers ADD COLUMN max_shift REAL;
+                 ALTER TABLE run_trackers ADD COLUMN span_error REAL;
+                 ALTER TABLE run_trackers ADD COLUMN anchor_pile TEXT;
+                 ALTER TABLE run_trackers ADD COLUMN anchor_motor INTEGER;
+                 UPDATE meta SET value = '3' WHERE key = 'schema_version';
+                 COMMIT;",
+            )
+            .map_err(db)?;
+        }
         let store = Self { conn, path };
         if existing.is_none() {
             store.set_meta("schema_version", SCHEMA_VERSION)?;
+        }
+        if existing.as_deref() == Some("2") {
+            // The site is in GDA2020 / MGA zone 56: fill the ArcGIS export's
+            // coordinate system if it was never set.
+            let mut s = store.settings()?;
+            if s.epsg.is_none() {
+                s.epsg = Settings::default().epsg;
+                store.set_settings(&s)?;
+            }
         }
         Ok(store)
     }
@@ -1485,7 +1532,8 @@ impl Store {
         let mut st = self
             .conn
             .prepare(
-                "SELECT rt.tracker, rt.run_id, r.created_at, rt.status, rt.input_sig, rt.max_angle_deg, rt.max_cut_fill
+                "SELECT rt.tracker, rt.run_id, r.created_at, rt.status, rt.input_sig, rt.max_angle_deg, rt.max_cut_fill,
+                        rt.max_shift, rt.span_error, rt.anchor_pile, rt.anchor_motor
                  FROM run_trackers rt JOIN runs r ON r.run_id = rt.run_id
                  ORDER BY rt.run_id",
             )
@@ -1494,14 +1542,18 @@ impl Store {
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
-                    (
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                    ),
+                    LatestRun {
+                        run_id: r.get(1)?,
+                        run_at: r.get(2)?,
+                        status: r.get(3)?,
+                        sig: r.get(4)?,
+                        max_angle: r.get(5)?,
+                        max_cut_fill: r.get(6)?,
+                        max_shift: r.get(7)?,
+                        span_error: r.get(8)?,
+                        anchor_pile: r.get(9)?,
+                        anchor_motor: r.get::<_, Option<i64>>(10)?.map(|v| v != 0),
+                    },
                 ))
             })
             .map_err(db)?;
@@ -1522,16 +1574,16 @@ impl Store {
     ) -> Result<HashMap<String, PileResultRow>> {
         let latest_of_pile: HashMap<&str, i64> = masters
             .iter()
-            .filter_map(|p| runs.get(&p.tracker).map(|r| (p.pile_id.as_str(), r.0)))
+            .filter_map(|p| runs.get(&p.tracker).map(|r| (p.pile_id.as_str(), r.run_id)))
             .collect();
-        let mut run_ids: Vec<i64> = runs.values().map(|r| r.0).collect();
+        let mut run_ids: Vec<i64> = runs.values().map(|r| r.run_id).collect();
         run_ids.sort_unstable();
         run_ids.dedup();
         let mut st = self
             .conn
             .prepare(
                 "SELECT pile_id, run_id, z_ground, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier,
-                        min_top, min_top_active
+                        min_top, min_top_active, set_e, set_n, shift
                  FROM run_piles WHERE run_id = ?1",
             )
             .map_err(db)?;
@@ -1552,6 +1604,9 @@ impl Store {
                             outlier: r.get::<_, i64>(8)? != 0,
                             min_top: r.get(9)?,
                             min_top_active: r.get::<_, i64>(10)? != 0,
+                            set_easting: r.get(11)?,
+                            set_northing: r.get(12)?,
+                            shift: r.get(13)?,
                         },
                     ))
                 })
@@ -1653,7 +1708,7 @@ impl Store {
                 continue;
             };
             let sig = Self::input_sig(&params_json, tp, &ev, &floods);
-            if !force && latest.get(&tp[0].tracker).is_some_and(|l| l.3 == sig) {
+            if !force && latest.get(&tp[0].tracker).is_some_and(|l| l.sig == sig) {
                 summary.up_to_date += 1;
                 continue;
             }
@@ -1702,15 +1757,16 @@ impl Store {
         {
             let mut ins_t = tx
                 .prepare(
-                    "INSERT INTO run_trackers (run_id, tracker, status, input_sig, n_survey, n_lidar, max_angle_deg, max_cut_fill)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    "INSERT INTO run_trackers (run_id, tracker, status, input_sig, n_survey, n_lidar, max_angle_deg, max_cut_fill,
+                                               max_shift, span_error, anchor_pile, anchor_motor)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
                 .map_err(db)?;
             let mut ins_p = tx
                 .prepare(
                     "INSERT INTO run_piles (run_id, pile_id, z_ground, z_import_id, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier,
-                                            min_top, min_top_active)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                            min_top, min_top_active, set_e, set_n, shift)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 )
                 .map_err(db)?;
             for ((tracker, sig, ev), res) in todo.iter().zip(&results) {
@@ -1726,7 +1782,11 @@ impl Store {
                         n_survey as i64,
                         (ev.len() - n_survey) as i64,
                         res.max_angle_deg,
-                        res.max_cut_fill
+                        res.max_cut_fill,
+                        res.anchor.map(|_| res.max_shift),
+                        res.anchor.map(|_| res.max_span_error),
+                        res.anchor.map(|(i, _)| tracker.piles[i].name.clone()),
+                        res.anchor.map(|(_, motor)| motor as i64)
                     ])
                     .map_err(db)?;
                 for ((p, e), r) in tracker.piles.iter().zip(ev).zip(&res.piles) {
@@ -1743,7 +1803,10 @@ impl Store {
                             r.angle_diff_deg,
                             r.lidar_outlier as i64,
                             p.min_top,
-                            r.min_top_active as i64
+                            r.min_top_active as i64,
+                            r.easting,
+                            r.northing,
+                            r.shift
                         ])
                         .map_err(db)?;
                 }
@@ -1800,7 +1863,10 @@ impl Store {
             });
             let run = runs.get(&tp[0].tracker);
             let (status, stale) = match run {
-                Some(r) => (r.2.clone(), current_sig.as_deref() != Some(r.3.as_str())),
+                Some(r) => (
+                    r.status.clone(),
+                    current_sig.as_deref() != Some(r.sig.as_str()),
+                ),
                 None if n_missing > 0 => ("AwaitingSurvey".to_string(), false),
                 None => ("NotRun".to_string(), true),
             };
@@ -1823,10 +1889,14 @@ impl Store {
                 n_missing,
                 status,
                 stale,
-                run_id: run.map(|r| r.0),
-                run_at: run.map(|r| r.1.clone()),
-                max_angle_deg: run.map(|r| r.4),
-                max_cut_fill: run.map(|r| r.5),
+                run_id: run.map(|r| r.run_id),
+                run_at: run.map(|r| r.run_at.clone()),
+                max_angle_deg: run.map(|r| r.max_angle),
+                max_cut_fill: run.map(|r| r.max_cut_fill),
+                max_shift: run.and_then(|r| r.max_shift),
+                span_error: run.and_then(|r| r.span_error),
+                anchor_pile: run.and_then(|r| r.anchor_pile.clone()),
+                anchor_motor: run.and_then(|r| r.anchor_motor),
                 n_flood,
                 n_flood_raised,
                 first_pile: range.start,
@@ -2632,6 +2702,93 @@ mod tests {
         assert_eq!(f64::from_le_bytes(geom[29..37].try_into().unwrap()), top);
         drop(c);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_out_keeps_spans_and_anchors_motor_piles() {
+        let mut s = loaded();
+        s.optimize(false, "test", 2).unwrap();
+        let st = s.state().unwrap();
+        let mut max_shift = 0.0f64;
+        for t in &st.trackers {
+            assert_eq!(t.anchor_motor, Some(true), "{}", t.tracker);
+            assert!(
+                t.span_error.unwrap() < 1e-6,
+                "{}: {:?}",
+                t.tracker,
+                t.span_error
+            );
+            let anchor = st
+                .piles
+                .iter()
+                .find(|p| Some(&p.pile_id) == t.anchor_pile.as_ref())
+                .unwrap();
+            assert!(anchor.result.as_ref().unwrap().shift.unwrap().abs() < 1e-12);
+            max_shift = max_shift.max(t.max_shift.unwrap());
+        }
+        assert!(max_shift > 0.005, "{max_shift}");
+        let p = st
+            .piles
+            .iter()
+            .find(|p| p.pile_id == "P01.02.01.01")
+            .unwrap();
+        let r = p.result.as_ref().unwrap();
+        assert!(((r.set_northing.unwrap() - p.northing) - r.shift.unwrap()).abs() < 1e-9);
+        assert_eq!(r.set_easting, Some(p.easting));
+        let csv = export::piles_csv(&st);
+        assert!(
+            csv.lines()
+                .next()
+                .unwrap()
+                .contains("Set-out Easting,Set-out Northing,Shift Along Tracker (m)")
+        );
+
+        // Turned off: design positions, everything re-optimised.
+        let mut set = s.settings().unwrap();
+        set.fixed_spans = false;
+        s.set_settings(&set).unwrap();
+        assert_eq!(s.optimize(false, "test", 2).unwrap().trackers_run, 62);
+        let st = s.state().unwrap();
+        assert!(
+            st.piles
+                .iter()
+                .all(|p| p.result.as_ref().unwrap().shift == Some(0.0))
+        );
+    }
+
+    #[test]
+    fn version_2_database_is_upgraded_in_place() {
+        let path = std::env::temp_dir().join(format!("tracker-top-v2-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            // The version 2 schema: today's without the set-out columns.
+            let v2 = SCHEMA
+                .replace("    max_shift     REAL,\n    span_error    REAL,\n    anchor_pile   TEXT,\n    anchor_motor  INTEGER,\n", "")
+                .replace("    set_e          REAL,\n    set_n          REAL,\n    shift          REAL,\n", "");
+            assert!(!v2.contains("set_e") && !v2.contains("anchor_pile"));
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(&v2).unwrap();
+            c.execute_batch(
+                "INSERT INTO meta VALUES ('schema_version', '2');
+                 INSERT INTO imports (kind, file_name, sha256, imported_at, origin, rows_total, rows_used, rows_rejected, report)
+                   VALUES ('master', 'm.csv', 'x', '2026-11-04', 'test', 1, 1, 0, '{}');
+                 INSERT INTO piles (pile_id, tracker, easting, northing, import_id) VALUES ('A.1', 'A', 0, 0, 1);",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.pile_count().unwrap(), 1);
+        assert_eq!(s.settings().unwrap().epsg, Some(7856));
+        assert_eq!(
+            s.meta("schema_version").unwrap().as_deref(),
+            Some(SCHEMA_VERSION)
+        );
+        drop(s);
+        // Opening again is a no-op.
+        assert!(Store::open(&path).is_ok());
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
     }
 
     #[test]

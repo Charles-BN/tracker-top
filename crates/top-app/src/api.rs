@@ -142,6 +142,9 @@ async fn state_columns(State(st): State<AppState>) -> ApiResult<Json<Value>> {
         "flvl": col(&|p| opt(p.flood_level, 4)),
         "mintop": col(&|p| opt(p.min_top, 4)),
         "mta": col(&|p| json!(p.result.as_ref().is_some_and(|r| r.min_top_active))),
+        "se": col(&|p| opt(p.result.as_ref().and_then(|r| r.set_easting), 4)),
+        "sn": col(&|p| opt(p.result.as_ref().and_then(|r| r.set_northing), 4)),
+        "shift": col(&|p| opt(p.result.as_ref().and_then(|r| r.shift), 4)),
     });
     Ok(Json(json!({ "piles": piles, "trackers": state.trackers })))
 }

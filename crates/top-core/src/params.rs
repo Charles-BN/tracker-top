@@ -21,6 +21,9 @@ pub struct Params {
     pub grading_threshold: f64,
     /// A pile is flagged as a LIDAR outlier if |z - mean| > alpha * std of its tracker.
     pub lidar_sigma_alpha: f64,
+    /// Keep each torque-tube span at its design length: piles are set out along
+    /// the tracker from the motor pile (see [`crate::setout`]).
+    pub fixed_spans: bool,
 }
 
 impl Default for Params {
@@ -35,6 +38,7 @@ impl Default for Params {
             max_cut_fill: 1.0,
             grading_threshold: 0.005,
             lidar_sigma_alpha: 2.0,
+            fixed_spans: false,
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::settings::Settings;
 use crate::store::{ImportRow, Kind, PileState, State, TrackerState};
 use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
 
-const PILE_HEADERS: [&str; 27] = [
+const PILE_HEADERS: [&str; 30] = [
     "Pile ID",
     "Block",
     "Section",
@@ -15,6 +15,9 @@ const PILE_HEADERS: [&str; 27] = [
     "Color",
     "Easting",
     "Northing",
+    "Set-out Easting",
+    "Set-out Northing",
+    "Shift Along Tracker (m)",
     "Ground Z",
     "Z Source",
     "Z Date",
@@ -78,6 +81,9 @@ fn pile_cells(p: &PileState, t: &TrackerState) -> Vec<Cell> {
         Cell::Text(p.color.clone()),
         Cell::Num(p.easting, 4),
         Cell::Num(p.northing, 4),
+        opt(r.and_then(|r| r.set_easting), 4),
+        opt(r.and_then(|r| r.set_northing), 4),
+        opt(r.and_then(|r| r.shift), 4),
         opt(p.z, 4),
         Cell::Text(source(p.z_source)),
         Cell::Text(p.z_date.clone().unwrap_or_default()),
@@ -217,6 +223,9 @@ fn tracker_cells(t: &TrackerState) -> Vec<Cell> {
         }),
         opt(t.max_angle_deg, 3),
         opt(t.max_cut_fill, 3),
+        Cell::Text(t.anchor_pile.clone().unwrap_or_default()),
+        opt(t.max_shift, 4),
+        opt(t.span_error.map(|e| e * 1000.0), 3),
         Cell::Num(t.n_flood as f64, 0),
         Cell::Num(t.n_flood_raised as f64, 0),
         opt(t.run_id.map(|r| r as f64), 0),
@@ -270,6 +279,9 @@ pub fn workbook(
                 "Up To Date",
                 "Max Angle (deg)",
                 "Max Cut/Fill (m)",
+                "Fixed Pile (set-out)",
+                "Max Shift (m)",
+                "Span Check (mm)",
                 "Flood Values",
                 "Raised For Flood",
                 "Run",

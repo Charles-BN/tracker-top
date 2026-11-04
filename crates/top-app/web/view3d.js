@@ -240,6 +240,10 @@ export class View3D {
         const k = idx >= 0 && idx < pal.length ? p.type[i] : 'Other';
         return { key: k, rgb: hexRgb(k === 'Other' ? OTHER : pal[idx]) };
       }
+      case 'shift': {
+        if (p.shift[i] == null) return { key: 'none', rgb: hexRgb(OTHER) };
+        return { key: 'v', rgb: divColor(p.shift[i] / ctx.shiftSpan, ctx.mid) };
+      }
       case 'flood': {
         const pal = dark ? CAT.dark : CAT.light;
         if (p.flood[i] == null) return { key: 'none', rgb: hexRgb(OTHER) };
@@ -290,16 +294,17 @@ export class View3D {
     this.shown = idx;
     if (!idx.length) { this.renderLegend({}, {}); this.needsRender = true; return; }
 
-    let e0 = Infinity, n0 = Infinity, z0 = Infinity, cfMax = 0;
+    let e0 = Infinity, n0 = Infinity, z0 = Infinity, cfMax = 0, shMax = 0;
     for (const i of idx) {
       e0 = Math.min(e0, p.e[i]); n0 = Math.min(n0, p.n[i]); z0 = Math.min(z0, this.groundOf(i), p.z[i] ?? Infinity);
       if (p.cf[i] != null) cfMax = Math.max(cfMax, Math.abs(p.cf[i]));
+      if (p.shift[i] != null) shMax = Math.max(shMax, Math.abs(p.shift[i]));
     }
     this.origin = { e0, n0, z0 };
     const X = (i) => p.e[i] - e0;
     const Z = (i) => -(p.n[i] - n0);
     const Y = (v) => (v - z0) * ex;
-    const ctx = { dark, mid: dark ? '#383835' : '#e1e0d9', cfSpan: Math.min(0.5, Math.max(0.05, cfMax)) };
+    const ctx = { dark, mid: dark ? '#383835' : '#e1e0d9', cfSpan: Math.min(0.5, Math.max(0.05, cfMax)), shiftSpan: Math.min(0.3, Math.max(0.01, shMax)) };
     this.ctx = ctx;
     const dim = hexRgb(dark ? '#383835' : '#d6d5cf');
 
@@ -460,6 +465,11 @@ export class View3D {
         list.push(['Other', OTHER, 'Other types']);
         html = '<div class="title">Pile type</div>' + items(list);
       }
+    } else if (mode === 'shift') {
+      const mm = (v) => `${v > 0 ? '+' : ''}${Math.round(v * 1000)} mm`;
+      html = ramp([DIV_NEG[2], DIV_NEG[0], ctx.mid, DIV_POS[0], DIV_POS[2]], mm(-ctx.shiftSpan), mm(ctx.shiftSpan), 'Set-out shift along tracker') +
+        '<div class="muted" style="margin-top:4px">+ towards the last pile (north for N-S trackers)</div>' +
+        `<div style="margin-top:6px">${items([['none', OTHER, 'No result yet']])}</div>`;
     } else if (mode === 'flood') {
       const pal = dark ? CAT.dark : CAT.light;
       html = '<div class="title">Flood</div>' + items([['raised', pal[6], 'Top raised above the flood'], ['clear', pal[2], 'Already above the flood'], ['none', OTHER, 'No flood value']]);

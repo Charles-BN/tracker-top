@@ -384,16 +384,20 @@ function renderDetail(t) {
   const p = state.piles;
   const rows = trackerRowsFor(state, t);
   const el = $('#tracker-detail');
+  const hasFlood = t.n_flood > 0;
   const piles = rows.map((r) => {
     const i = r.i;
     const over = r.ang != null && Math.abs(r.ang) > settings.max_angle_deg + 0.001;
+    const sh = p.shift[i];
+    const big = sh != null && Math.abs(sh) > settings.shift_warn_m;
+    const shiftCell = `<td class="num" title="${p.se[i] == null ? '' : `Set-out E ${fmt(p.se[i], 3)}  N ${fmt(p.sn[i], 3)}`}"${big ? ' style="color:var(--warning-text);font-weight:600"' : ''}>${sh == null ? '–' : (sh * 1000).toFixed(0)}</td>`;
     const flood = p.flood[i] == null ? '–' : `${fmt(p.flood[i], 2)}${p.mta[i] ? ' <span class="raised" title="Top raised to stay above the flood level">▲</span>' : ''}`;
     return `<tr>
       <td>${esc(p.id[i])}</td><td><span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}</span></td>
       <td class="num">${fmt(p.z[i])}</td>
       <td class="muted">${p.zsrc[i] === 'survey' ? `survey ${esc(p.zdate[i])}` : p.zsrc[i] === 'lidar' ? 'LIDAR' : 'none'}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠ ${fmt(p.offset[i], 2)} m</span>` : ''}</td>
-      <td class="num">${fmt(p.cf[i])}</td><td class="num"><b>${fmt(p.top[i])}</b></td><td class="num">${fmt(p.rev[i])}</td>
-      <td class="num" title="${p.mintop[i] == null ? '' : `Lowest allowed top: ${fmt(p.mintop[i])}`}">${flood}</td>
+      <td class="num">${fmt(p.cf[i])}</td><td class="num"><b>${fmt(p.top[i])}</b></td>${shiftCell}<td class="num">${fmt(p.rev[i])}</td>
+      ${hasFlood ? `<td class="num" title="${p.mintop[i] == null ? '' : `Lowest allowed top: ${fmt(p.mintop[i])}`}">${flood}</td>` : ''}
       <td class="num"${over ? ' style="color:var(--critical-text);font-weight:600"' : ''}>${fmt(p.ang[i], 3)}${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}</td></tr>`;
   }).join('');
   el.innerHTML = `
@@ -407,12 +411,15 @@ function renderDetail(t) {
       <div><span>LIDAR only</span><b>${t.n_lidar}</b></div>
       <div><span>Max angle change</span><b>${fmt(t.max_angle_deg, 3)}°</b></div>
       <div><span>Max cut/fill</span><b>${fmt(t.max_cut_fill, 3)} m</b></div>
+      ${t.anchor_pile ? `<div><span>Fixed pile (set-out)</span><b>${esc(t.anchor_pile.split('.').pop())}${t.anchor_motor ? ' · motor' : ' · middle'}</b></div>
+      <div><span>Largest shift</span><b>${((t.max_shift ?? 0) * 1000).toFixed(0)} mm</b></div>
+      <div title="Largest difference between a span's length along the tube and its design length"><span>Span check</span><b>${t.span_error != null && t.span_error < 0.0005 ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(2)} mm</b></div>` : ''}
       <div><span>Result of</span><b>${esc(t.run_at?.slice(0, 16) ?? '–')}</b></div>
       <div><span>Flood values</span><b>${t.n_flood ? `${t.n_flood} of ${t.n_piles} · ${t.n_flood_raised} raised` : 'none'}</b></div>
     </div>
     <div id="profile"></div>
     <div class="table-wrap" style="margin-top:12px"><table>
-      <thead><tr><th>Pile</th><th>Type</th><th class="num">Ground Z</th><th>Source</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num">Reveal</th><th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th><th class="num">Angle (°)</th></tr></thead>
+      <thead><tr><th>Pile</th><th>Type</th><th class="num">Ground Z</th><th>Source</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num" title="Move along the tracker from the design position, to keep the torque-tube spans at their design length. Hover for the set-out coordinates.">Shift (mm)</th><th class="num">Reveal</th>${hasFlood ? '<th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th>' : ''}<th class="num">Angle (°)</th></tr></thead>
       <tbody>${piles}</tbody></table></div>`;
   renderProfile($('#profile', el), rows, settings);
   $('#detail-3d').addEventListener('click', async () => {
@@ -462,6 +469,7 @@ function showPileInfo(i) {
     ${p.ttype[i] ? row('Tracker type', esc(p.ttype[i])) : ''}
     ${row('Easting', fmt(p.e[i], 3))}
     ${row('Northing', fmt(p.n[i], 3))}
+    ${p.se[i] != null ? row('Set-out E / N', `${fmt(p.se[i], 3)} / ${fmt(p.sn[i], 3)}`) + row('Shift along tracker', `${(p.shift[i] * 1000).toFixed(0)} mm`) : ''}
     ${row('Ground Z', `${fmt(p.z[i])} <span class="muted">${p.zsrc[i] === 'survey' ? 'survey ' + esc(p.zdate[i]) : p.zsrc[i] === 'lidar' ? 'LIDAR' : ''}</span>`)}
     ${row('Cut / fill', fmt(p.cf[i]))}
     ${row('Top of pile', `<b>${fmt(p.top[i])}</b>`)}
@@ -565,6 +573,8 @@ renderers.settings = async () => {
     $('[name="flood_mode"]').value = v.flood_mode;
     $('[name="flood_clearance_m"]').value = v.flood_clearance_m;
     $('[name="epsg"]').value = v.epsg ?? '';
+    $('[name="fixed_spans"]').checked = !!v.fixed_spans;
+    $('[name="shift_warn_m"]').value = v.shift_warn_m;
   };
   setFlood(settings);
   $('#watch-folder').value = watch_folder || '';
@@ -590,6 +600,8 @@ $('#settings-form').addEventListener('submit', async (e) => {
   settings.flood_clearance_m = Number($('[name="flood_clearance_m"]').value);
   const epsg = $('[name="epsg"]').value.trim();
   settings.epsg = epsg ? Number(epsg) : null;
+  settings.fixed_spans = $('[name="fixed_spans"]').checked;
+  settings.shift_warn_m = Number($('[name="shift_warn_m"]').value);
   const btn = e.submitter;
   if (btn) btn.disabled = true;
   try {

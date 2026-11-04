@@ -112,17 +112,40 @@ A newer file replaces older values; a wrong one can be voided. Results show the 
 the tracker profile (dashed line, raised band), the pile table (▲ = raised), the 3D view (water
 surface, *Flood* colouring) and the Excel export.
 
+### Set-out (new x, y of each pile)
+
+The layout's distance between two consecutive piles is the length of the torque-tube span
+between them (the layout is drawn flat: spans are nominal lengths such as 9.415 m). Once the tops
+are optimised, a span between tops that differ by `dz` covers only `sqrt(L² - dz²)` on the ground,
+so the piles must move along the tracker:
+
+- the **motor pile** (pile type `HMP`/`SMP`…, or "Motor") keeps its design position; a tracker
+  without exactly one motor pile is anchored on its middle pile;
+- the other piles slide along the tracker axis towards it, span by span;
+- the tracker is **re-optimised on the new spacing** until the positions move by less than
+  0.1 mm, then **verified** at the final positions: true angle changes within the limit (else the
+  tracker is *Non-compliant*), and every span's length along the tube equal to its design length
+  (*Span check*).
+
+Results show the set-out Easting/Northing and the shift (mm) of every pile, the fixed pile and the
+largest shift of each tracker; piles moving more than 0.10 m are highlighted (Settings → Set-out,
+where the calculation can also be turned off). On the project master file the largest shift of a
+tracker is 11.5 mm (median), 98 mm (95th percentile) and 215 mm at most (steep 15-pile trackers).
+The Excel/CSV exports carry `Set-out Easting`, `Set-out Northing`, `Shift Along Tracker (m)`, and
+the ArcGIS export draws piles at their set-out position.
+
 ### ArcGIS
 
 The **ArcGIS** button downloads a GeoPackage (`.gpkg`, OGC standard) with two layers:
 
-- `piles`: 3D points at each pile's top of pile (ground when not optimised yet), with every
-  attribute: IDs, tracker type, pile type and colour, ground elevation and its source, survey
-  offset, flood value / level / minimum top, cut/fill, ToP, reveal, angle change, tracker status;
+- `piles`: 3D points at each pile's set-out position and top of pile (design position and ground
+  when not optimised yet), with every attribute: IDs, tracker type, pile type and colour, design and
+  set-out coordinates and shift, ground elevation and its source, survey offset, flood value /
+  level / minimum top, cut/fill, ToP, reveal, angle change, tracker status;
 - `trackers`: 3D lines through the pile tops, with status, largest angle and cut/fill, flood counts.
 
-Set the coordinate system once in **Settings → ArcGIS export** (EPSG code, e.g. 7856 = GDA2020 /
-MGA zone 56, 28356 = GDA94 / MGA zone 56). Then:
+The coordinate system is **GDA2020 / MGA zone 56 (EPSG:7856)** by default; another one can be set in
+**Settings → ArcGIS export** (EPSG code). Then:
 
 - **ArcGIS Pro**: *Add Data* → the `.gpkg` file (or drag it onto the map / a local scene).
 - **ArcGIS Online / Portal**: *Content → New item* → the `.gpkg` → *Create a hosted feature layer*.
@@ -215,12 +238,15 @@ testdata/         small synthetic sample
 
 ## Verification done
 
-- 47 automated tests: 21 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
-  trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable), 2 CLI,
-  24 database (file formats and header spellings, columns recognised from their values in any
+- 55 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+  trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable,
+  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 26 database (file formats and header spellings, columns recognised from their values in any
   order, immutability triggers, duplicate files, ID and position matching, offset and jump checks,
-  voiding, incremental re-runs, settings changes, flood layer in both modes, Excel and GeoPackage
-  exports).
+  voiding, incremental re-runs, settings changes, flood layer in both modes, set-out, upgrade of a
+  version 2 database in place, Excel and GeoPackage exports).
+- Set-out on the project master file: all 2,792 trackers anchored on their motor pile; an
+  independent recheck from the exported Excel file finds every 3D span equal to its design length,
+  no motor pile moved, and true angles within 0.70° at the set-out positions.
 - GeoPackage export of the project master file read back with GDAL 3.12: `piles` (36,913 Point Z) and
   `trackers` (2,792 LineString Z) in EPSG:7856; the coordinate systems written (GDA2020 and GDA94 / MGA,
   WGS 84 and ETRS89 / UTM, Lambert-93) each read back as their EPSG definition.
@@ -244,5 +270,7 @@ testdata/         small synthetic sample
 - Pile-type logic (`pile_name` in the Python script: HMP-31/SMP-31 above 6 % ground slope, minimum embedment).
 - Piles already installed: hold their measured ToP fixed when re-optimising a tracker.
 - Validation on real survey reports and real flood values (none available yet).
+- Comparing as-built pile positions (survey after piling) with the set-out positions.
+- Direct update of an ArcGIS Online layer (needs an ArcGIS credential).
 - Databases made by the 0.2.0 preview (schema 1) are refused: start a new one and import the master
-  list again.
+  list again. Version 0.3.0 databases (schema 2) are upgraded in place.

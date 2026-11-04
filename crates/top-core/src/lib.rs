@@ -13,12 +13,14 @@ pub mod model;
 pub mod optimize;
 pub mod params;
 pub mod qp;
+pub mod setout;
 
 pub use error::{Error, Result};
-pub use model::{group_trackers, normalize_block, Pile, Tracker};
+pub use model::{Pile, Tracker, group_trackers, normalize_block};
 pub use optimize::{
-    angle_diffs_deg, default_solver, optimize_all, optimize_tracker, PileResult, TrackerResult,
-    TrackerStatus,
+    PileResult, TrackerResult, TrackerStatus, angle_diffs_deg, default_solver, optimize_all,
+    optimize_tracker,
 };
 pub use params::Params;
 pub use qp::{AdmmSolver, Qp, QpSolution, QpSolver, QpStatus};
+pub use setout::{SetOut, is_motor_pile, set_out};

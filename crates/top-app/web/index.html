@@ -89,6 +89,7 @@
           <option value="source">Elevation source</option>
           <option value="type">Pile type (site colours)</option>
           <option value="flood">Flood</option>
+          <option value="shift">Set-out shift</option>
         </select>
       </label>
       <label class="field"><span>Ground mesh</span>
@@ -147,6 +148,17 @@
             <small>Lowest allowed top of pile = water level + clearance. Include the drop from the top of pile to the lowest module edge at maximum tilt, plus any freeboard.</small>
           </label>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Set-out</h2><span class="muted">New pile positions after optimisation.</span></div>
+        <div class="settings-grid">
+          <label class="check" style="align-self:start"><input type="checkbox" name="fixed_spans">
+            <span>Keep the distance between piles along the torque tube fixed</span></label>
+          <label class="field"><span>Flag piles moved more than (m)</span>
+            <input type="number" step="any" min="0" name="shift_warn_m" required>
+          </label>
+        </div>
+        <p class="muted" style="margin-top:10px;font-size:12.5px">The layout's distance between two piles is the torque-tube span length. Where the tops differ in height, the span covers less ground, so piles move along the tracker towards the motor pile, which stays at its design position. The tracker is then re-optimised and re-checked at the new positions.</p>
       </div>
       <div class="card">
         <div class="card-head"><h2>ArcGIS export</h2><span class="muted">The <b>ArcGIS</b> button (top right) downloads a GeoPackage.</span></div>

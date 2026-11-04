@@ -49,8 +49,14 @@ pub struct Settings {
     pub flood_clearance_m: f64,
 
     /// Coordinate system of Easting/Northing (EPSG code), written into the
-    /// GeoPackage export for ArcGIS. `None` until set.
+    /// GeoPackage export for ArcGIS. Default 7856, GDA2020 / MGA zone 56.
     pub epsg: Option<u32>,
+
+    /// Keep each torque-tube span at its design length: piles are set out along
+    /// the tracker from the motor pile, and the tracker re-checked there.
+    pub fixed_spans: bool,
+    /// Flag piles whose set-out position moves more than this from design (m).
+    pub shift_warn_m: f64,
 }
 
 impl Default for Settings {
@@ -69,7 +75,9 @@ impl Default for Settings {
             jump_warn_m: 0.30,
             flood_mode: FloodMode::Depth,
             flood_clearance_m: 0.0,
-            epsg: None,
+            epsg: Some(7856),
+            fixed_spans: true,
+            shift_warn_m: 0.10,
         }
     }
 }
@@ -83,6 +91,7 @@ impl Settings {
             max_angle_deg: self.max_angle_deg,
             max_cut_fill: self.max_cut_fill,
             grading_threshold: self.grading_threshold,
+            fixed_spans: self.fixed_spans,
             ..Params::default()
         }
     }
@@ -99,6 +108,9 @@ impl Settings {
             "grading_threshold": self.grading_threshold,
             "flood_mode": self.flood_mode,
             "flood_clearance_m": self.flood_clearance_m,
+            "fixed_spans": self.fixed_spans,
+            // Bumped when the calculation itself changes, so results are redone.
+            "method": 2,
         })
         .to_string()
     }
@@ -126,6 +138,7 @@ impl Settings {
             ("offset_warn_m", self.offset_warn_m),
             ("offset_reject_m", self.offset_reject_m),
             ("jump_warn_m", self.jump_warn_m),
+            ("shift_warn_m", self.shift_warn_m),
             ("reveal_nominal", self.reveal_nominal),
         ];
         for (name, v) in pos {

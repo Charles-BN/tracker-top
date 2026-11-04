@@ -139,6 +139,10 @@ CREATE TABLE IF NOT EXISTS run_trackers (
     n_lidar       INTEGER NOT NULL,
     max_angle_deg REAL NOT NULL,
     max_cut_fill  REAL NOT NULL,
+    max_shift     REAL,
+    span_error    REAL,
+    anchor_pile   TEXT,
+    anchor_motor  INTEGER,
     PRIMARY KEY (run_id, tracker)
 );
 CREATE INDEX IF NOT EXISTS run_trackers_tracker ON run_trackers (tracker, run_id);
@@ -156,6 +160,9 @@ CREATE TABLE IF NOT EXISTS run_piles (
     outlier        INTEGER NOT NULL,
     min_top        REAL,
     min_top_active INTEGER NOT NULL DEFAULT 0,
+    set_e          REAL,
+    set_n          REAL,
+    shift          REAL,
     PRIMARY KEY (run_id, pile_id)
 );
 

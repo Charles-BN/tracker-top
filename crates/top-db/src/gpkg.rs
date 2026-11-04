@@ -1,10 +1,11 @@
 //! GeoPackage export (OGC GeoPackage 1.4), for ArcGIS Pro, ArcGIS Online, QGIS.
 //!
 //! Two layers:
-//! - `piles`: one 3D point per pile at its top of pile (or its ground when it
-//!   has no result yet), with every attribute of the Piles sheet;
+//! - `piles`: one 3D point per pile at its set-out position and top of pile
+//!   (design position and ground when it has no result yet), with every
+//!   attribute of the Piles sheet;
 //! - `trackers`: one 3D line per tracker through its pile tops, with status,
-//!   largest angle and cut/fill, flood counts.
+//!   largest angle, cut/fill and pile shift, flood counts.
 //!
 //! The coordinate system is the one set in Settings (EPSG code). Its definition
 //! is written for the usual solar-site systems (WGS 84 / UTM, GDA94 and GDA2020
@@ -189,19 +190,28 @@ fn line_z(srs_id: i32, pts: &[(f64, f64, f64)]) -> Vec<u8> {
     b
 }
 
+/// Position drawn for a pile: its set-out position, else its design position.
+fn draw_xy(p: &PileState) -> (f64, f64) {
+    match p.result.as_ref().map(|r| (r.set_easting, r.set_northing)) {
+        Some((Some(e), Some(n))) => (e, n),
+        _ => (p.easting, p.northing),
+    }
+}
+
 /// Elevation drawn for a pile: its top of pile, else its ground.
 fn draw_z(p: &PileState) -> f64 {
     p.result.as_ref().map(|r| r.top).or(p.z).unwrap_or(0.0)
 }
 
 const PILE_COLUMNS: &str = "pile_id TEXT, tracker TEXT, block TEXT, section TEXT, tracker_type TEXT, pile_type TEXT, color TEXT,
-    easting REAL, northing REAL, ground_z REAL, z_source TEXT, z_date TEXT, survey_offset REAL, n_surveys INTEGER,
+    easting REAL, northing REAL, set_e REAL, set_n REAL, shift REAL, ground_z REAL, z_source TEXT, z_date TEXT, survey_offset REAL, n_surveys INTEGER,
     flood_value REAL, flood_level REAL, min_top REAL, raised_flood INTEGER,
     new_ground REAL, cut_fill REAL, top REAL, reveal REAL, angle_diff REAL,
     tracker_status TEXT, up_to_date INTEGER, run_id INTEGER";
 
 const TRACKER_COLUMNS: &str = "tracker TEXT, block TEXT, section TEXT, tracker_type TEXT, n_piles INTEGER, n_surveyed INTEGER,
     n_lidar INTEGER, n_missing INTEGER, status TEXT, up_to_date INTEGER, max_angle REAL, max_cut_fill REAL,
+    fixed_pile TEXT, max_shift REAL, span_error_mm REAL,
     n_flood INTEGER, n_flood_raised INTEGER, run_id INTEGER, run_at TEXT";
 
 fn up_to_date(t: &TrackerState) -> Option<i64> {
@@ -314,15 +324,17 @@ fn write(path: &std::path::Path, state: &State, settings: &Settings) -> rusqlite
     {
         let mut ins = tx.prepare(
             "INSERT INTO piles (geom, pile_id, tracker, block, section, tracker_type, pile_type, color, easting, northing,
+                set_e, set_n, shift,
                 ground_z, z_source, z_date, survey_offset, n_surveys, flood_value, flood_level, min_top, raised_flood,
                 new_ground, cut_fill, top, reveal, angle_diff, tracker_status, up_to_date, run_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
         )?;
         for t in &state.trackers {
             for p in &state.piles[t.first_pile..t.first_pile + t.n_piles] {
                 let r = p.result.as_ref();
+                let (x, y) = draw_xy(p);
                 ins.execute(params![
-                    point_z(srs_id, p.easting, p.northing, draw_z(p)),
+                    point_z(srs_id, x, y, draw_z(p)),
                     p.pile_id,
                     p.tracker,
                     p.block,
@@ -332,6 +344,9 @@ fn write(path: &std::path::Path, state: &State, settings: &Settings) -> rusqlite
                     p.color,
                     p.easting,
                     p.northing,
+                    r.and_then(|r| r.set_easting),
+                    r.and_then(|r| r.set_northing),
+                    r.and_then(|r| r.shift),
                     p.z,
                     p.z_source.map(|k| match k {
                         Kind::Survey => "Survey",
@@ -357,13 +372,16 @@ fn write(path: &std::path::Path, state: &State, settings: &Settings) -> rusqlite
         }
         let mut ins = tx.prepare(
             "INSERT INTO trackers (geom, tracker, block, section, tracker_type, n_piles, n_surveyed, n_lidar, n_missing, status,
-                up_to_date, max_angle, max_cut_fill, n_flood, n_flood_raised, run_id, run_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                up_to_date, max_angle, max_cut_fill, fixed_pile, max_shift, span_error_mm, n_flood, n_flood_raised, run_id, run_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         )?;
         for t in &state.trackers {
             let pts: Vec<(f64, f64, f64)> = state.piles[t.first_pile..t.first_pile + t.n_piles]
                 .iter()
-                .map(|p| (p.easting, p.northing, draw_z(p)))
+                .map(|p| {
+                    let (x, y) = draw_xy(p);
+                    (x, y, draw_z(p))
+                })
                 .collect();
             let geom = (pts.len() >= 2).then(|| line_z(srs_id, &pts));
             ins.execute(params![
@@ -380,6 +398,9 @@ fn write(path: &std::path::Path, state: &State, settings: &Settings) -> rusqlite
                 up_to_date(t),
                 t.max_angle_deg,
                 t.max_cut_fill,
+                t.anchor_pile,
+                t.max_shift,
+                t.span_error.map(|e| e * 1000.0),
                 t.n_flood as i64,
                 t.n_flood_raised as i64,
                 t.run_id,

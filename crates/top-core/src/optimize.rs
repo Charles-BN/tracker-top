@@ -26,6 +26,7 @@
 use crate::model::Tracker;
 use crate::params::Params;
 use crate::qp::{AdmmSolver, Qp, QpSolver, QpStatus};
+use crate::setout::{set_out, span_error};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +72,12 @@ pub struct PileResult {
     /// The top sits on the pile's minimum (`Pile::min_top`, e.g. raised above
     /// the flood level) rather than where the terrain alone would put it.
     pub min_top_active: bool,
+    /// Set-out position (m): the design position, or with
+    /// `Params::fixed_spans` the position keeping the tube spans' design lengths.
+    pub easting: f64,
+    pub northing: f64,
+    /// Move along the tracker from the design position (m), see [`crate::setout`].
+    pub shift: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +90,13 @@ pub struct TrackerResult {
     /// Largest |cut/fill| over the tracker (m).
     pub max_cut_fill: f64,
     pub qp_iterations: usize,
+    /// Largest |shift| from the design positions (m); 0 without `fixed_spans`.
+    pub max_shift: f64,
+    /// Largest difference between a span's length along the tube and its
+    /// design length (m), after set-out: the verification of the set-out.
+    pub max_span_error: f64,
+    /// Pile kept at its design position, and whether it is the motor pile.
+    pub anchor: Option<(usize, bool)>,
 }
 
 /// Angle change (deg) at each pile between the incoming and outgoing span of a
@@ -111,6 +125,7 @@ fn outlier_flags(z: &[f64], alpha: f64) -> Vec<bool> {
 }
 
 fn passthrough(
+    tracker: &Tracker,
     z: &[f64],
     min_top: &[Option<f64>],
     flags: Vec<bool>,
@@ -121,7 +136,8 @@ fn passthrough(
         .iter()
         .zip(min_top)
         .zip(flags)
-        .map(|((&z, &mt), lidar_outlier)| {
+        .zip(&tracker.piles)
+        .map(|(((&z, &mt), lidar_outlier), pile)| {
             let nominal = z + params.reveal_nominal;
             let top = mt.map_or(nominal, |m| nominal.max(m));
             PileResult {
@@ -132,6 +148,9 @@ fn passthrough(
                 angle_diff_deg: 0.0,
                 lidar_outlier,
                 min_top_active: mt.is_some_and(|m| m > nominal),
+                easting: pile.easting,
+                northing: pile.northing,
+                shift: 0.0,
             }
         })
         .collect();
@@ -141,6 +160,9 @@ fn passthrough(
         max_angle_deg: 0.0,
         max_cut_fill: 0.0,
         qp_iterations: 0,
+        max_shift: 0.0,
+        max_span_error: 0.0,
+        anchor: None,
     }
 }
 
@@ -230,21 +252,105 @@ fn build_qp(s: &[f64], z: &[f64], min_top: &[Option<f64>], z_ref: f64, params: &
 const MIN_TOP_ACTIVE_TOL: f64 = 1e-3;
 
 /// Optimise one tracker with the given solver.
-pub fn optimize_tracker(tracker: &Tracker, params: &Params, solver: &dyn QpSolver) -> TrackerResult {
+///
+/// With `params.fixed_spans`, the piles are then set out so that every
+/// torque-tube span keeps its design length (see [`crate::setout`]), the
+/// tracker is optimised again on the set-out spacing until the positions move
+/// by less than 0.1 mm, and the true angles are checked at the final positions.
+pub fn optimize_tracker(
+    tracker: &Tracker,
+    params: &Params,
+    solver: &dyn QpSolver,
+) -> TrackerResult {
+    let mut res = optimize_at(tracker, params, solver);
+    if !params.fixed_spans || tracker.piles.len() < 2 || res.status == TrackerStatus::InvalidInput {
+        return res;
+    }
+    let tops = |r: &TrackerResult| r.piles.iter().map(|p| p.top).collect::<Vec<f64>>();
+    let mut so = set_out(tracker, &tops(&res));
+    let n = tracker.piles.len();
+    if n >= 3 {
+        for _ in 0..4 {
+            let mut moved = tracker.clone();
+            for (i, p) in moved.piles.iter_mut().enumerate() {
+                p.easting = so.easting[i];
+                p.northing = so.northing[i];
+            }
+            res = optimize_at(&moved, params, solver);
+            let next = set_out(tracker, &tops(&res));
+            let change = next
+                .shift
+                .iter()
+                .zip(&so.shift)
+                .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+            so = next;
+            if change < 1e-4 {
+                break;
+            }
+        }
+        // Verification at the final positions: true angles, span lengths.
+        let moved = Tracker {
+            id: tracker.id.clone(),
+            piles: tracker
+                .piles
+                .iter()
+                .enumerate()
+                .map(|(i, p)| crate::model::Pile {
+                    easting: so.easting[i],
+                    northing: so.northing[i],
+                    ..p.clone()
+                })
+                .collect(),
+        };
+        let angles = angle_diffs_deg(&moved.chainage(), &tops(&res));
+        for (p, a) in res.piles.iter_mut().zip(&angles) {
+            p.angle_diff_deg = *a;
+        }
+        res.max_angle_deg = angles.iter().fold(0.0_f64, |m, a| m.max(a.abs()));
+        if res.max_angle_deg > params.max_angle_deg + params.angle_tolerance_deg
+            && matches!(res.status, TrackerStatus::Compliant | TrackerStatus::Graded)
+        {
+            res.status = TrackerStatus::NonCompliant;
+        }
+    }
+    for (i, p) in res.piles.iter_mut().enumerate() {
+        p.easting = so.easting[i];
+        p.northing = so.northing[i];
+        p.shift = so.shift[i];
+    }
+    res.max_shift = so.shift.iter().fold(0.0_f64, |m, d| m.max(d.abs()));
+    res.max_span_error = span_error(tracker, &so, &tops(&res));
+    res.anchor = Some((so.anchor, so.anchor_is_motor));
+    res
+}
+
+/// Optimise one tracker with its piles where they are.
+fn optimize_at(tracker: &Tracker, params: &Params, solver: &dyn QpSolver) -> TrackerResult {
     let n = tracker.piles.len();
     let z: Vec<f64> = tracker.piles.iter().map(|p| p.z_lidar).collect();
-    let min_top: Vec<Option<f64>> = tracker.piles.iter().map(|p| p.min_top.filter(|m| m.is_finite())).collect();
+    let min_top: Vec<Option<f64>> = tracker
+        .piles
+        .iter()
+        .map(|p| p.min_top.filter(|m| m.is_finite()))
+        .collect();
     let flags = outlier_flags(&z, params.lidar_sigma_alpha);
 
     if n < 3 {
-        return passthrough(&z, &min_top, flags, params, TrackerStatus::Skipped);
+        return passthrough(tracker, &z, &min_top, flags, params, TrackerStatus::Skipped);
     }
 
     let s = tracker.chainage();
     let finite = z.iter().chain(&s).all(|v| v.is_finite());
     let distinct = s.windows(2).all(|w| w[1] - w[0] > 1e-6);
     if !finite || !distinct {
-        return passthrough(&z, &min_top, flags, params, TrackerStatus::InvalidInput);
+        return passthrough(
+            tracker,
+            &z,
+            &min_top,
+            flags,
+            params,
+            TrackerStatus::InvalidInput,
+        );
     }
 
     let z_ref = z.iter().sum::<f64>() / n as f64;
@@ -267,12 +373,18 @@ pub fn optimize_tracker(tracker: &Tracker, params: &Params, solver: &dyn QpSolve
             angle_diff_deg: angles[i],
             lidar_outlier: flags[i],
             min_top_active: min_top[i].is_some_and(|m| top[i] - m < MIN_TOP_ACTIVE_TOL),
+            easting: tracker.piles[i].easting,
+            northing: tracker.piles[i].northing,
+            shift: 0.0,
         })
         .collect();
 
     // Independent check of the true (non-linearised) limits.
     const REVEAL_TOL: f64 = 1e-4;
-    let min_top_ok = piles.iter().zip(&min_top).all(|(p, mt)| mt.is_none_or(|m| p.top >= m - REVEAL_TOL));
+    let min_top_ok = piles
+        .iter()
+        .zip(&min_top)
+        .all(|(p, mt)| mt.is_none_or(|m| p.top >= m - REVEAL_TOL));
     let reveal_ok = piles.iter().all(|p| {
         p.final_reveal >= params.reveal_min() - REVEAL_TOL
             && p.final_reveal <= params.reveal_max() + REVEAL_TOL
@@ -297,6 +409,9 @@ pub fn optimize_tracker(tracker: &Tracker, params: &Params, solver: &dyn QpSolve
         max_angle_deg: max_angle,
         max_cut_fill: max_cf,
         qp_iterations: sol.iterations,
+        max_shift: 0.0,
+        max_span_error: 0.0,
+        anchor: None,
     }
 }
 
@@ -334,7 +449,10 @@ pub fn optimize_all(
             }
         }
     });
-    slots.into_iter().map(|r| r.expect("every tracker is processed")).collect()
+    slots
+        .into_iter()
+        .map(|r| r.expect("every tracker is processed"))
+        .collect()
 }
 
 /// Convenience: default ADMM solver.
@@ -363,15 +481,36 @@ mod tests {
                 min_top: None,
             })
             .collect();
-        Tracker { id: id.into(), piles }
+        Tracker {
+            id: id.into(),
+            piles,
+        }
     }
 
     fn check(tr: &Tracker, r: &TrackerResult, params: &Params) {
-        assert_ne!(r.status, TrackerStatus::NonCompliant, "{}: {:?}", tr.id, r.max_angle_deg);
-        assert!(r.max_angle_deg <= params.max_angle_deg + 1e-6, "angle {}", r.max_angle_deg);
+        assert_ne!(
+            r.status,
+            TrackerStatus::NonCompliant,
+            "{}: {:?}",
+            tr.id,
+            r.max_angle_deg
+        );
+        assert!(
+            r.max_angle_deg <= params.max_angle_deg + 1e-6,
+            "angle {}",
+            r.max_angle_deg
+        );
         for p in &r.piles {
-            assert!(p.final_reveal >= params.reveal_min() - 1e-4, "reveal {}", p.final_reveal);
-            assert!(p.final_reveal <= params.reveal_max() + 1e-4, "reveal {}", p.final_reveal);
+            assert!(
+                p.final_reveal >= params.reveal_min() - 1e-4,
+                "reveal {}",
+                p.final_reveal
+            );
+            assert!(
+                p.final_reveal <= params.reveal_max() + 1e-4,
+                "reveal {}",
+                p.final_reveal
+            );
             assert!(p.cut_fill.abs() <= params.max_cut_fill + 1e-4);
         }
     }
@@ -379,7 +518,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
         }
     }
@@ -417,7 +559,12 @@ mod tests {
         let tr = tracker("T", &z, 8.0);
         let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
         check(&tr, &r, &params);
-        assert_eq!(r.status, TrackerStatus::Compliant, "max cf {}", r.max_cut_fill);
+        assert_eq!(
+            r.status,
+            TrackerStatus::Compliant,
+            "max cf {}",
+            r.max_cut_fill
+        );
         // The pile above the dip must have a larger reveal than its neighbours.
         assert!(r.piles[7].final_reveal > r.piles[3].final_reveal);
     }
@@ -485,7 +632,11 @@ mod tests {
                 slope += 0.03 * (rng.next() - 0.5);
                 level += slope * 8.0;
                 let noise = 0.12 * (rng.next() - 0.5);
-                let spike = if rng.next() < 0.03 { 0.6 * (rng.next() - 0.5) } else { 0.0 };
+                let spike = if rng.next() < 0.03 {
+                    0.6 * (rng.next() - 0.5)
+                } else {
+                    0.0
+                };
                 z.push(level + noise + spike);
             }
             trackers.push(tracker(&format!("R{k:03}"), &z, 8.0));
@@ -497,7 +648,10 @@ mod tests {
             check(tr, r, &params);
         }
         // Parallel run must match a serial run exactly.
-        let serial: Vec<_> = trackers.iter().map(|t| optimize_tracker(t, &params, &solver)).collect();
+        let serial: Vec<_> = trackers
+            .iter()
+            .map(|t| optimize_tracker(t, &params, &solver))
+            .collect();
         for (a, b) in results.iter().zip(&serial) {
             assert_eq!(a.status, b.status);
             for (pa, pb) in a.piles.iter().zip(&b.piles) {
@@ -569,5 +723,76 @@ mod tests {
         assert_eq!(r.status, TrackerStatus::Skipped);
         assert!((r.piles[0].top - 101.55).abs() < 1e-9 && r.piles[0].min_top_active);
         assert!((r.piles[1].top - 101.55).abs() < 1e-9 && !r.piles[1].min_top_active);
+    }
+
+    #[test]
+    fn fixed_spans_set_out_and_verify() {
+        // 15-pile tracker on a 6 % slope, motor pile in the middle.
+        let params = Params {
+            fixed_spans: true,
+            ..Params::default()
+        };
+        let mut tr = tracker(
+            "T",
+            &(0..15)
+                .map(|i| 100.0 + 0.06 * 9.415 * i as f64)
+                .collect::<Vec<_>>(),
+            9.415,
+        );
+        tr.piles[7].pile_type = "HMP-20".into();
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        check(&tr, &r, &params);
+        assert_eq!(r.anchor, Some((7, true)));
+        assert!(r.piles[7].shift.abs() < 1e-12);
+        // Each span 16.9 mm shorter in plan: 7 spans from the motor pile to each end.
+        let per = 9.415 - (9.415f64.powi(2) - (0.06 * 9.415f64).powi(2)).sqrt();
+        assert!(
+            (r.piles[0].shift - 7.0 * per).abs() < 1e-4,
+            "{}",
+            r.piles[0].shift
+        );
+        assert!(
+            (r.piles[14].shift + 7.0 * per).abs() < 1e-4,
+            "{}",
+            r.piles[14].shift
+        );
+        assert!((r.max_shift - 7.0 * per).abs() < 1e-4);
+        assert!(r.max_span_error < 1e-6, "{}", r.max_span_error);
+        assert!((r.piles[14].northing - (5000.0 + 14.0 * 9.415 - 7.0 * per)).abs() < 1e-4);
+
+        // Without the option, positions stay as designed.
+        let r = optimize_tracker(&tr, &Params::default(), &AdmmSolver::default());
+        assert!(r.piles.iter().all(|p| p.shift == 0.0) && r.anchor.is_none());
+    }
+
+    #[test]
+    fn set_out_keeps_angles_within_the_limit() {
+        // Bumpy ground: angles sit on the limit, and must still be within it
+        // at the set-out positions.
+        let params = Params {
+            fixed_spans: true,
+            ..Params::default()
+        };
+        let mut rng = Lcg(42);
+        for k in 0..40 {
+            let z: Vec<f64> = (0..15)
+                .map(|i| 100.0 + 0.08 * 9.0 * i as f64 + 0.4 * (rng.next() - 0.5))
+                .collect();
+            let mut tr = tracker(&format!("T{k}"), &z, 9.0);
+            tr.piles[7].pile_type = "SMP-20".into();
+            let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+            assert_ne!(
+                r.status,
+                TrackerStatus::NonCompliant,
+                "T{k}: {}",
+                r.max_angle_deg
+            );
+            assert!(
+                r.max_angle_deg <= params.max_angle_deg + params.angle_tolerance_deg,
+                "T{k}: {}",
+                r.max_angle_deg
+            );
+            assert!(r.max_span_error < 1e-6, "T{k}: {}", r.max_span_error);
+        }
     }
 }

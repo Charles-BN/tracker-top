@@ -99,7 +99,7 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let store = match Store::open(&args.db) {
+    let mut store = match Store::open(&args.db) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot open database {}: {e}", args.db.display());
@@ -114,6 +114,13 @@ async fn main() -> std::process::ExitCode {
     }
     let db_path = std::fs::canonicalize(&args.db).unwrap_or(args.db.clone());
     println!("Database: {}", db_path.display());
+    // Bring results up to date after a program update that changed the
+    // calculation (nothing to do otherwise).
+    match store.optimize(false, "program update", args.threads.max(1)) {
+        Ok(run) if run.run_id.is_some() => println!("Results updated: {}", run.message),
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: could not update results: {e}"),
+    }
 
     let state = api::AppState {
         store: Arc::new(Mutex::new(store)),
