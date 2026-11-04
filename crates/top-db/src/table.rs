@@ -415,15 +415,8 @@ fn finish(mut rows: Vec<Vec<String>>) -> Table {
             had_header: true,
         }
     } else {
-        let positional = ["Point", "Easting", "Northing", "Elevation", "Code"];
-        let headers = (0..width)
-            .map(|i| {
-                positional
-                    .get(i)
-                    .map(|s| s.to_string())
-                    .unwrap_or(format!("Column {}", i + 1))
-            })
-            .collect();
+        // Named by position only; the importer recognises them from their values.
+        let headers = (0..width).map(|i| format!("Column {}", i + 1)).collect();
         Table {
             headers,
             rows,
@@ -471,9 +464,9 @@ mod tests {
         .unwrap();
         assert!(!t.had_header);
         assert_eq!(t.rows.len(), 2);
-        assert_eq!(t.find(Col::PileId), Some(0));
-        assert_eq!(t.find(Col::Elevation), Some(3));
-        assert_eq!(t.find(Col::Code), Some(4));
+        // No names to go by: the importer recognises the columns from their values.
+        assert_eq!(t.headers[0], "Column 1");
+        assert_eq!(t.find(Col::PileId), None);
     }
 
     #[test]

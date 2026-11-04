@@ -45,7 +45,7 @@ Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the 
    recomputed.
 6. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
    **History** of imports, and **Export Excel** (sheets *Piles*, *Trackers*, *Imports*,
-   *Settings*) or CSV.
+   *Settings*), CSV, or **ArcGIS** (GeoPackage, see *ArcGIS* below).
 
 Tabs: *Overview* (progress by block), *Import*, *Results*, *3D view*, *History*, *Settings*
 (reveal window, angle limit, survey-matching tolerances, watch folder).
@@ -68,10 +68,17 @@ The same file imported twice is refused (it is recognised by content, not by nam
 
 CSV, TXT, Excel (`.xlsx`, `.xls`, `.ods`), with or without a header row:
 
-- Headers are recognised in English and French (`Point`/`Nom`, `Easting`/`X`/`Est`,
-  `Northing`/`Y`/`Nord`, `Elevation`/`Z`/`Altitude`/`TN`, `Code`, `Date`…).
-- Without a header, columns are read as Point, Easting, Northing, Elevation, Code (PENZD, the
-  usual survey-controller export).
+- Columns can be in any order. Headers are recognised in English and French (`Point`/`Nom`,
+  `Easting`/`X`/`Est`, `Northing`/`Y`/`Nord`, `Elevation`/`Z`/`Altitude`/`TN`, `Code`, `Date`…),
+  and the values then confirm or correct them:
+  - the **pile ID column** is the one whose values match the most piles of the master list,
+    wherever it is (e.g. point numbers first and the pile ID in the code/description column),
+    including IDs inside text such as `P01.02.01.05_TN`;
+  - **Easting / Northing** are the columns whose values equal those piles' design coordinates
+    (so PENZD, PNEZD and swapped X/Y headers all work);
+  - the **elevation** is the remaining numeric column closest to the site's ground levels.
+- Files without a header row work the same way. The import report says which column was used
+  for what.
 - `,` `;` tab or space separators; decimal comma or point; UTF-8 or Windows-1252.
 - Survey date: the one entered on the Import page, else a Date column, else the file name
   (`2026-11-03`, `20261103`, `03.11.2026`…), else the import day.
@@ -104,6 +111,24 @@ Load the values with **Import → Flood values** (pile ID plus a column such as 
 A newer file replaces older values; a wrong one can be voided. Results show the flood level in
 the tracker profile (dashed line, raised band), the pile table (▲ = raised), the 3D view (water
 surface, *Flood* colouring) and the Excel export.
+
+### ArcGIS
+
+The **ArcGIS** button downloads a GeoPackage (`.gpkg`, OGC standard) with two layers:
+
+- `piles`: 3D points at each pile's top of pile (ground when not optimised yet), with every
+  attribute: IDs, tracker type, pile type and colour, ground elevation and its source, survey
+  offset, flood value / level / minimum top, cut/fill, ToP, reveal, angle change, tracker status;
+- `trackers`: 3D lines through the pile tops, with status, largest angle and cut/fill, flood counts.
+
+Set the coordinate system once in **Settings → ArcGIS export** (EPSG code, e.g. 7856 = GDA2020 /
+MGA zone 56, 28356 = GDA94 / MGA zone 56). Then:
+
+- **ArcGIS Pro**: *Add Data* → the `.gpkg` file (or drag it onto the map / a local scene).
+- **ArcGIS Online / Portal**: *Content → New item* → the `.gpkg` → *Create a hosted feature layer*.
+  To publish a newer export later and keep the same layer and its maps, open the layer's item
+  page → *Update data* → *Overwrite entire layer* with the new file.
+- **QGIS** opens it directly too.
 
 ### Watch folder and Trimble Connect
 
@@ -190,11 +215,15 @@ testdata/         small synthetic sample
 
 ## Verification done
 
-- 44 automated tests: 21 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+- 47 automated tests: 21 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
   trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable), 2 CLI,
-  21 database (file formats and header spellings, immutability triggers, duplicate files, ID and
-  position matching, offset and jump checks, voiding, incremental re-runs, settings changes, flood
-  layer in both modes, exports).
+  24 database (file formats and header spellings, columns recognised from their values in any
+  order, immutability triggers, duplicate files, ID and position matching, offset and jump checks,
+  voiding, incremental re-runs, settings changes, flood layer in both modes, Excel and GeoPackage
+  exports).
+- GeoPackage export of the project master file read back with GDAL 3.12: `piles` (36,913 Point Z) and
+  `trackers` (2,792 LineString Z) in EPSG:7856; the coordinate systems written (GDA2020 and GDA94 / MGA,
+  WGS 84 and ETRS89 / UTM, Lambert-93) each read back as their EPSG definition.
 - Project master file `Piles_MUS_meanwidth_v1_2910_ZLIDARCF.xlsx` (36,913 piles, 2,792 trackers,
   41 blocks): imported and optimised in 0.8 s on `Z LIDAR_CF`: 2,791 compliant, 1 graded (max cut/fill
   0.03 m). The same piles on raw `Z LIDAR`: 64 graded (max 0.68 m), consistent with `Z LIDAR_CF`

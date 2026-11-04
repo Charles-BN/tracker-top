@@ -24,6 +24,7 @@
     <button class="btn" id="btn-optimize" title="Optimise every tracker whose elevations or settings changed">Optimise <span id="stale-count" class="count-badge" hidden></span></button>
     <a class="btn" href="api/export.xlsx" download>Export Excel</a>
     <a class="btn" href="api/export.csv" download>CSV</a>
+    <a class="btn" href="api/export.gpkg" download id="btn-gpkg" title="GeoPackage for ArcGIS Pro / ArcGIS Online / QGIS: piles and trackers, with all results">ArcGIS</a>
   </div>
 </header>
 
@@ -144,6 +145,15 @@
           <label class="field"><span>Clearance above flood water (m)</span>
             <input type="number" step="any" name="flood_clearance_m" required>
             <small>Lowest allowed top of pile = water level + clearance. Include the drop from the top of pile to the lowest module edge at maximum tilt, plus any freeboard.</small>
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>ArcGIS export</h2><span class="muted">The <b>ArcGIS</b> button (top right) downloads a GeoPackage.</span></div>
+        <div class="settings-grid">
+          <label class="field"><span>Coordinate system of Easting / Northing (EPSG code)</span>
+            <input type="number" step="1" min="1024" name="epsg" placeholder="e.g. 7856">
+            <small>7856 = GDA2020 / MGA zone 56, 28356 = GDA94 / MGA zone 56, 326xx / 327xx = WGS 84 / UTM north / south, 2154 = Lambert-93. Without it, ArcGIS asks for the coordinate system.</small>
           </label>
         </div>
       </div>

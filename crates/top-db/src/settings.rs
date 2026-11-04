@@ -47,6 +47,10 @@ pub struct Settings {
     /// Required height of the top of pile above the flood water level (m).
     /// The lowest allowed top of a pile is `water level + flood_clearance_m`.
     pub flood_clearance_m: f64,
+
+    /// Coordinate system of Easting/Northing (EPSG code), written into the
+    /// GeoPackage export for ArcGIS. `None` until set.
+    pub epsg: Option<u32>,
 }
 
 impl Default for Settings {
@@ -65,6 +69,7 @@ impl Default for Settings {
             jump_warn_m: 0.30,
             flood_mode: FloodMode::Depth,
             flood_clearance_m: 0.0,
+            epsg: None,
         }
     }
 }
@@ -130,6 +135,11 @@ impl Settings {
         }
         if !self.flood_clearance_m.is_finite() || self.flood_clearance_m.abs() > 20.0 {
             return Err("flood_clearance_m must be a number between -20 and 20".into());
+        }
+        if self.epsg.is_some_and(|c| !(1024..=999_999).contains(&c)) {
+            return Err(
+                "the EPSG code must be a number such as 7856 (GDA2020 / MGA zone 56)".into(),
+            );
         }
         if self.offset_warn_m > self.offset_reject_m {
             return Err("offset_warn_m must not exceed offset_reject_m".into());

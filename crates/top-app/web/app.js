@@ -82,6 +82,9 @@ function runText(run) {
 function updateHeader() {
   const s = cache.summary;
   if (!s) return;
+  $('#btn-gpkg').title = s.settings.epsg
+    ? `GeoPackage for ArcGIS / QGIS (EPSG:${s.settings.epsg}): piles and trackers with all results`
+    : 'GeoPackage for ArcGIS / QGIS. Set the coordinate system in Settings > ArcGIS export first.';
   $('#db-path').textContent = s.summary.db_path;
   $('#db-path').title = `Database: ${s.summary.db_path}`;
   const stale = s.summary.stale_trackers;
@@ -561,6 +564,7 @@ renderers.settings = async () => {
   const setFlood = (v) => {
     $('[name="flood_mode"]').value = v.flood_mode;
     $('[name="flood_clearance_m"]').value = v.flood_clearance_m;
+    $('[name="epsg"]').value = v.epsg ?? '';
   };
   setFlood(settings);
   $('#watch-folder').value = watch_folder || '';
@@ -584,6 +588,8 @@ $('#settings-form').addEventListener('submit', async (e) => {
   for (const [k] of [...OPT_FIELDS, ...MATCH_FIELDS]) settings[k] = Number($(`[name="${k}"]`).value);
   settings.flood_mode = $('[name="flood_mode"]').value;
   settings.flood_clearance_m = Number($('[name="flood_clearance_m"]').value);
+  const epsg = $('[name="epsg"]').value.trim();
+  settings.epsg = epsg ? Number(epsg) : null;
   const btn = e.submitter;
   if (btn) btn.disabled = true;
   try {

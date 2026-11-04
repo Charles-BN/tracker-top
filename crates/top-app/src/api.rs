@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/export.xlsx", get(export_xlsx))
         .route("/api/export.csv", get(export_csv))
+        .route("/api/export.gpkg", get(export_gpkg))
         .fallback(static_file)
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(state)
@@ -326,5 +327,17 @@ async fn export_csv(State(st): State<AppState>) -> ApiResult<Response> {
         &format!("tracker-top_piles_{}.csv", stamp()),
         "text/csv; charset=utf-8",
         text.into_bytes(),
+    ))
+}
+
+async fn export_gpkg(State(st): State<AppState>) -> ApiResult<Response> {
+    let bytes = with_store(&st.store, |s| {
+        top_db::gpkg::geopackage(&s.state()?, &s.settings()?)
+    })
+    .await?;
+    Ok(attachment(
+        &format!("tracker-top_{}.gpkg", stamp()),
+        "application/geopackage+sqlite3",
+        bytes,
     ))
 }

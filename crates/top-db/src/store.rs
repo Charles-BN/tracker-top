@@ -276,6 +276,26 @@ impl<'a> PileIndex<'a> {
             .or_else(|| self.by_upper.get(&id.to_uppercase()).copied())
     }
 
+    /// A pile ID in a cell: the whole cell, or one of its words, so that
+    /// `"P01.02.01.05_TN"` or `"TN P01.02.01.05"` are found too.
+    fn find_in_cell(&self, cell: &str) -> Option<usize> {
+        let cell = cell.trim();
+        if cell.is_empty() {
+            return None;
+        }
+        self.by_id(cell).or_else(|| {
+            cell.split(|c: char| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '_' | ';' | ',' | '|' | '/' | '\\' | '(' | ')' | '[' | ']'
+                    )
+            })
+            .filter(|t| !t.is_empty() && *t != cell)
+            .find_map(|t| self.by_id(t))
+        })
+    }
+
     fn nearest(&self, e: f64, n: f64, radius: f64) -> Option<(usize, f64)> {
         let (cx, cy) = Self::key(self.cell, e, n);
         let reach = (radius / self.cell).ceil() as i64;
@@ -558,7 +578,7 @@ impl Store {
             return Ok(rep);
         }
         if !table.had_header {
-            rep.info("No header row found: columns were read as Point, Easting, Northing, Elevation, Code.");
+            rep.info("No header row: columns were recognised from their values.");
         }
         let mut rep = match kind {
             Kind::Master => self.import_master(rep, &table, &sha, origin)?,
@@ -907,12 +927,183 @@ impl Store {
         // The value read per pile: ground elevation, or flood value.
         let value_col = if flood { Col::Flood } else { Col::Elevation };
         let what = if flood { "Flood value" } else { "Elevation" };
-        let c_id = table.find(Col::PileId);
-        let c_e = table.find(Col::Easting);
-        let c_n = table.find(Col::Northing);
-        let c_z = table.find(value_col);
+        let index = PileIndex::new(&masters, s.match_radius_m);
+        let current = if flood {
+            HashMap::new()
+        } else {
+            self.latest_elevations()?
+        };
+
+        // Columns are found by header name first; their values then confirm or
+        // correct them, so neither the column order nor the names matter.
+        let mut c_id = table.find(Col::PileId);
+        let mut c_e = table.find(Col::Easting);
+        let mut c_n = table.find(Col::Northing);
+        let mut c_z = table.find(value_col);
         let c_code = table.find(Col::Code);
         let c_date = table.find(Col::Date);
+        let width = table.headers.len();
+        let header = |c: usize| table.headers[c].as_str();
+
+        // Pile IDs: the column whose values match the most piles of the master list.
+        let id_hits = |c: usize| {
+            table
+                .rows
+                .iter()
+                .filter(|r| index.find_in_cell(table.cell(r, Some(c))).is_some())
+                .count()
+        };
+        let header_hits = c_id.map(id_hits).unwrap_or(0);
+        if let Some((best, hits)) = (0..width)
+            .map(|c| (c, id_hits(c)))
+            .max_by_key(|&(c, h)| (h, std::cmp::Reverse(c)))
+            && hits > header_hits
+        {
+            rep.info(&format!(
+                "Pile IDs recognised in column \"{}\" from their values ({hits} of {} rows match the master list).",
+                header(best),
+                table.rows.len()
+            ));
+            c_id = Some(best);
+        }
+
+        // Numeric columns and their medians (the ID column excluded).
+        let numeric: Vec<(usize, f64)> = (0..width)
+            .filter(|&c| Some(c) != c_id)
+            .filter_map(|c| {
+                let cells: Vec<&str> = table
+                    .rows
+                    .iter()
+                    .map(|r| table.cell(r, Some(c)))
+                    .filter(|v| !v.is_empty())
+                    .collect();
+                let values: Vec<f64> = cells.iter().filter_map(|v| parse_num(v)).collect();
+                (!cells.is_empty() && values.len() * 10 >= cells.len() * 8)
+                    .then(|| median(values))
+                    .flatten()
+                    .map(|m| (c, m))
+            })
+            .collect();
+        let med_of = |c: Option<usize>| {
+            c.and_then(|c| numeric.iter().find(|(k, _)| *k == c).map(|(_, m)| *m))
+        };
+
+        // Easting / Northing. With pile IDs: the columns whose values equal the
+        // matched piles' design coordinates (within the reject distance).
+        // Without: the columns whose typical value is nearest the site's.
+        let matched_rows: Vec<(&Vec<String>, usize)> = c_id
+            .map(|c| {
+                table
+                    .rows
+                    .iter()
+                    .filter_map(|r| index.find_in_cell(table.cell(r, Some(c))).map(|p| (r, p)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tol = s.offset_reject_m.max(0.5);
+        let axis_hits = |c: usize, east: bool| {
+            matched_rows
+                .iter()
+                .filter(|(r, p)| {
+                    let target = if east {
+                        masters[*p].easting
+                    } else {
+                        masters[*p].northing
+                    };
+                    parse_num(table.cell(r, Some(c))).is_some_and(|v| (v - target).abs() <= tol)
+                })
+                .count()
+        };
+        let detected: Option<(usize, usize)> = if !matched_rows.is_empty() {
+            let best = |east: bool| {
+                numeric
+                    .iter()
+                    .map(|(c, _)| (*c, axis_hits(*c, east)))
+                    .filter(|&(_, h)| h > 0)
+                    .max_by_key(|&(c, h)| (h, std::cmp::Reverse(c)))
+            };
+            let (he, hn) = (
+                c_e.map(|c| axis_hits(c, true)).unwrap_or(0),
+                c_n.map(|c| axis_hits(c, false)).unwrap_or(0),
+            );
+            match (best(true), best(false)) {
+                (Some((de, be)), Some((dn, bn))) if de != dn && (be > he || bn > hn) => {
+                    Some((de, dn))
+                }
+                _ => None,
+            }
+        } else if let (Some(me), Some(mn)) = (
+            median(masters.iter().map(|p| p.easting).collect()),
+            median(masters.iter().map(|p| p.northing).collect()),
+        ) {
+            let fits = |m: f64, target: f64, other: f64| {
+                (m - target).abs() < 20_000.0 && (m - target).abs() < (m - other).abs()
+            };
+            let best_for = |target: f64, other: f64| {
+                numeric
+                    .iter()
+                    .filter(|(_, m)| fits(*m, target, other))
+                    .min_by(|a, b| (a.1 - target).abs().total_cmp(&(b.1 - target).abs()))
+                    .map(|(c, _)| *c)
+            };
+            let header_ok = med_of(c_e).is_some_and(|m| fits(m, me, mn))
+                && med_of(c_n).is_some_and(|m| fits(m, mn, me));
+            match (best_for(me, mn), best_for(mn, me)) {
+                (Some(de), Some(dn)) if !header_ok && de != dn => Some((de, dn)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((de, dn)) = detected {
+            let swapped = Some(de) == c_n && Some(dn) == c_e;
+            rep.info(&format!(
+                "{}Easting read from \"{}\" and Northing from \"{}\", recognised from their values.",
+                if swapped {
+                    "Easting and Northing columns were swapped (X/Y convention): "
+                } else {
+                    ""
+                },
+                header(de),
+                header(dn)
+            ));
+            c_e = Some(de);
+            c_n = Some(dn);
+        }
+
+        // The value column when no header names it: by its values.
+        if c_z.is_none() {
+            let candidates: Vec<(usize, f64)> = numeric
+                .iter()
+                .filter(|(c, _)| Some(*c) != c_e && Some(*c) != c_n)
+                .copied()
+                .collect();
+            let z_ref = median(current.values().map(|e| e.z).collect());
+            let after = c_e.max(c_n);
+            let pick = z_ref
+                .and_then(|zr| {
+                    candidates
+                        .iter()
+                        .filter(|(_, m)| (m - zr).abs() < 300.0)
+                        .min_by(|a, b| (a.1 - zr).abs().total_cmp(&(b.1 - zr).abs()))
+                        .map(|(c, _)| *c)
+                })
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .find(|(c, _)| after.is_some_and(|a| *c > a))
+                        .map(|(c, _)| *c)
+                })
+                .or_else(|| candidates.first().map(|(c, _)| *c));
+            if let Some(c) = pick {
+                rep.info(&format!(
+                    "{what} read from column \"{}\", recognised from its values.",
+                    header(c)
+                ));
+                c_z = Some(c);
+            }
+        }
+
         for (col, idx) in [
             (Col::PileId, c_id),
             (Col::Easting, c_e),
@@ -950,7 +1141,7 @@ impl Store {
         }
         let has_xy = c_e.is_some() && c_n.is_some();
         if c_id.is_none() && !has_xy {
-            rep.error("Points cannot be matched to piles: the file needs a pile ID column, or Easting and Northing columns.");
+            rep.error("Points cannot be matched to piles: no column holds pile IDs of the master list, and no Easting and Northing columns were found.");
             return Ok(rep);
         }
         if !has_xy {
@@ -963,9 +1154,8 @@ impl Store {
             rep.add(level, "No Easting/Northing columns: points are matched by ID only and positions cannot be checked.", "");
         }
 
-        let index = PileIndex::new(&masters, s.match_radius_m);
         let previous = if kind == Kind::Survey {
-            self.latest_elevations()?
+            current
         } else {
             HashMap::new()
         };
@@ -1007,7 +1197,7 @@ impl Store {
             let n = parse_num(table.cell(row, c_n));
 
             let mut matched = (!id.is_empty())
-                .then(|| index.by_id(id))
+                .then(|| index.find_in_cell(id))
                 .flatten()
                 .map(|p| (p, false));
             if matched.is_none()
@@ -1771,6 +1961,15 @@ impl Store {
     }
 }
 
+fn median(mut v: Vec<f64>) -> Option<f64> {
+    v.retain(|x| x.is_finite());
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(f64::total_cmp);
+    Some(v[v.len() / 2])
+}
+
 /// Sort key that orders "2" before "10".
 pub fn natural_key(s: &str) -> (u64, String) {
     (s.parse::<u64>().unwrap_or(u64::MAX), s.to_string())
@@ -2206,6 +2405,99 @@ mod tests {
     }
 
     #[test]
+    fn survey_columns_recognised_from_values() {
+        let mut s = loaded();
+        // Header row, point numbers first, pile ID in a later "Description" column
+        // with a suffix, Northing before Easting.
+        let a = "Point;Nord;Est;Z;Description\n\
+            1001;6428751,2501;305512,5968;49,461;P01.02.01.01_TN\n\
+            1002;6428743,3355;305512,5968;49,862;P01.02.01.02_TN\n\
+            1003;6428735,0761;305512,5968;50,297;TN P01.02.01.03\n";
+        let rep = s
+            .import_file(Kind::Survey, "a.csv", a.as_bytes(), None, "t")
+            .unwrap();
+        let text = findings(&rep);
+        assert!(rep.accepted, "{text}");
+        assert_eq!(rep.rows_used, 3, "{text}");
+        assert!(
+            text.contains("Pile IDs recognised in column \"Description\""),
+            "{text}"
+        );
+        assert!(!text.contains("matched to the nearest pile"), "{text}");
+        assert_eq!(rep.columns.get("Easting").map(String::as_str), Some("Est"));
+
+        // No header: point number, Northing, Easting, Elevation, pile ID (PNEZD).
+        let b = "2001,6428726.8167,305512.5968,50.656,P01.02.01.04\n\
+            2002,6428719.7133,305512.5968,51.031,P01.02.01.05\n";
+        let rep = s
+            .import_file(Kind::Survey, "b.txt", b.as_bytes(), None, "t")
+            .unwrap();
+        let text = findings(&rep);
+        assert!(rep.accepted, "{text}");
+        assert_eq!(rep.rows_used, 2, "{text}");
+        assert_eq!(
+            rep.columns.get("Pile ID").map(String::as_str),
+            Some("Column 5")
+        );
+        assert_eq!(
+            rep.columns.get("Easting").map(String::as_str),
+            Some("Column 3")
+        );
+        assert_eq!(
+            rep.columns.get("Northing").map(String::as_str),
+            Some("Column 2")
+        );
+        assert_eq!(
+            rep.columns.get("Elevation").map(String::as_str),
+            Some("Column 4")
+        );
+        let st = s.state().unwrap();
+        let p = st
+            .piles
+            .iter()
+            .find(|p| p.pile_id == "P01.02.01.05")
+            .unwrap();
+        assert_eq!(p.z, Some(51.031));
+        assert!(p.offset_m.unwrap() < 1e-6);
+
+        // X / Y headers the other way round: X holds northings.
+        let c = "ID,X,Y,Z\nP01.02.01.06,6428711.4539,305512.5968,51.4\n";
+        let rep = s
+            .import_file(Kind::Survey, "c.csv", c.as_bytes(), None, "t")
+            .unwrap();
+        let text = findings(&rep);
+        assert!(text.contains("swapped"), "{text}");
+        assert_eq!(rep.columns.get("Easting").map(String::as_str), Some("Y"));
+        assert!(!text.contains("Rejected"), "{text}");
+    }
+
+    #[test]
+    fn headerless_survey_without_reference_elevations() {
+        let mut s = Store::open_in_memory().unwrap();
+        let master = "Pile ID,Easting,Northing\nA.1,500000,6000000\nA.2,500000,6000008\nA.3,500000,6000016\n";
+        assert!(
+            s.import_file(Kind::Master, "m.csv", master.as_bytes(), None, "t")
+                .unwrap()
+                .accepted
+        );
+        // Point number, Easting, Northing, Elevation, Code: elevation is the
+        // first numeric column after the coordinates.
+        let survey = "7,500000.01,6000000.00,120.50,A.1\n8,500000.00,6000008.02,120.61,A.2\n";
+        let rep = s
+            .import_file(Kind::Survey, "s.txt", survey.as_bytes(), None, "t")
+            .unwrap();
+        assert!(rep.accepted, "{}", findings(&rep));
+        assert_eq!(
+            rep.columns.get("Elevation").map(String::as_str),
+            Some("Column 4")
+        );
+        assert_eq!(
+            rep.columns.get("Pile ID").map(String::as_str),
+            Some("Column 5")
+        );
+    }
+
+    #[test]
     fn lidar_file_is_not_taken_as_a_survey() {
         let mut s = loaded();
         let rep = s
@@ -2297,6 +2589,49 @@ mod tests {
         let t = read_table("x.xlsx", &xlsx).unwrap();
         assert_eq!(t.rows.len(), 789);
         assert_eq!(t.find(Col::PileId), Some(0));
+    }
+
+    #[test]
+    fn geopackage_export() {
+        let mut s = loaded();
+        s.optimize(false, "test", 2).unwrap();
+        let mut set = s.settings().unwrap();
+        set.epsg = Some(7856);
+        s.set_settings(&set).unwrap();
+        let bytes = crate::gpkg::geopackage(&s.state().unwrap(), &s.settings().unwrap()).unwrap();
+        assert_eq!(&bytes[..16], b"SQLite format 3\0");
+        assert_eq!(&bytes[68..72], &0x4750_4B47u32.to_be_bytes()); // application_id 'GPKG'
+        let path = std::env::temp_dir().join(format!("tt-gpkg-test-{}.gpkg", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let c = Connection::open(&path).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM piles", [], |r| r.get(0))
+            .unwrap();
+        let t: i64 = c
+            .query_row("SELECT COUNT(*) FROM trackers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((n, t), (789, 62));
+        let (srs, wkt): (i64, String) = c
+            .query_row("SELECT g.srs_id, s.definition FROM gpkg_geometry_columns g JOIN gpkg_spatial_ref_sys s USING (srs_id) WHERE g.table_name = 'piles'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(srs, 7856);
+        assert!(
+            wkt.starts_with("PROJCS[\"GDA2020 / MGA zone 56\"")
+                && wkt.contains("\"central_meridian\",153")
+        );
+        let (geom, top): (Vec<u8>, f64) = c
+            .query_row(
+                "SELECT geom, top FROM piles WHERE pile_id = 'P01.02.01.01'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(&geom[..4], &[b'G', b'P', 0, 1]);
+        assert_eq!(i32::from_le_bytes(geom[4..8].try_into().unwrap()), 7856);
+        assert_eq!(u32::from_le_bytes(geom[9..13].try_into().unwrap()), 1001);
+        assert_eq!(f64::from_le_bytes(geom[29..37].try_into().unwrap()), top);
+        drop(c);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
