@@ -29,7 +29,7 @@ struct LatestRun {
 }
 
 const SCHEMA: &str = include_str!("schema.sql");
-const SCHEMA_VERSION: &str = "3";
+const SCHEMA_VERSION: &str = "4";
 
 fn db(e: rusqlite::Error) -> String {
     match e {
@@ -208,6 +208,8 @@ pub struct BlockSummary {
     pub surveyed: usize,
     pub trackers: usize,
     pub counts: BTreeMap<String, usize>,
+    /// Mean reveal of the block's piles that have a result (m).
+    pub reveal_mean: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -220,6 +222,13 @@ pub struct Summary {
     pub piles_no_elevation: usize,
     pub piles_with_flood: usize,
     pub piles_flood_raised: usize,
+    /// Reveal (top of pile above ground) of the piles with a result: mean,
+    /// mean of those whose ground comes from a field survey, lowest, highest.
+    pub piles_with_result: usize,
+    pub reveal_mean: Option<f64>,
+    pub reveal_mean_survey: Option<f64>,
+    pub reveal_min: Option<f64>,
+    pub reveal_max: Option<f64>,
     pub tracker_status: BTreeMap<String, usize>,
     pub stale_trackers: usize,
     pub imports: usize,
@@ -352,8 +361,10 @@ fn line_no(table: &Table, idx: usize) -> usize {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     path: PathBuf,
+    /// Revision of the last copy handed out for the shared folder (see sync.rs).
+    pub(crate) snapshot_revision: Option<String>,
 }
 
 impl Store {
@@ -368,16 +379,8 @@ impl Store {
     /// Open a database from a copy of its file (a backup, or the browser's
     /// stored copy). It lives in memory; `to_bytes` gives the file back.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 100 || &bytes[..16] != b"SQLite format 3\0" {
-            return Err("this file is not a tracker-top database".into());
-        }
-        let mut data = bytes.to_vec();
-        // A copy in memory uses a rollback journal, not WAL (header bytes 18-19).
-        data[18] = 1;
-        data[19] = 1;
         let mut conn = Connection::open_in_memory().map_err(db)?;
-        conn.deserialize_read_exact("main", &data[..], data.len(), false)
-            .map_err(|e| format!("cannot read the database file: {e}"))?;
+        Self::deserialize(&mut conn, bytes)?;
         let is_ours: bool = conn
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')
@@ -390,6 +393,27 @@ impl Store {
             return Err("this file is not a tracker-top database".into());
         }
         Self::init(conn, PathBuf::from("this browser"))
+    }
+
+    /// Load a database file's bytes into an in-memory connection.
+    fn deserialize(conn: &mut Connection, bytes: &[u8]) -> Result<()> {
+        if bytes.len() < 100 || &bytes[..16] != b"SQLite format 3\0" {
+            return Err("this file is not a tracker-top database".into());
+        }
+        let mut data = bytes.to_vec();
+        // A copy in memory uses a rollback journal, not WAL (header bytes 18-19).
+        data[18] = 1;
+        data[19] = 1;
+        conn.deserialize_read_exact("main", &data[..], data.len(), false)
+            .map_err(|e| format!("cannot read the database file: {e}"))
+    }
+
+    /// Replace this in-memory database with the database in `bytes`.
+    pub(crate) fn load_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        Self::deserialize(&mut self.conn, bytes)?;
+        self.conn
+            .pragma_update(None, "foreign_keys", "ON")
+            .map_err(db)
     }
 
     /// The whole database as the bytes of a database file.
@@ -420,7 +444,7 @@ impl Store {
             )
             .ok();
         match existing.as_deref() {
-            None | Some(SCHEMA_VERSION) | Some("2") => {}
+            None | Some(SCHEMA_VERSION) | Some("2") | Some("3") => {}
             Some("1") => {
                 return Err("this database was made by a preview version of tracker-top (schema 1) \
                      and cannot be opened: start a new database and import the master pile list again"
@@ -446,14 +470,22 @@ impl Store {
                  ALTER TABLE run_trackers ADD COLUMN span_error REAL;
                  ALTER TABLE run_trackers ADD COLUMN anchor_pile TEXT;
                  ALTER TABLE run_trackers ADD COLUMN anchor_motor INTEGER;
-                 UPDATE meta SET value = '3' WHERE key = 'schema_version';
                  COMMIT;",
             )
             .map_err(db)?;
         }
-        let store = Self { conn, path };
-        if existing.is_none() {
+        // 3 -> 4: the installer export log and the revision triggers, both
+        // created by the schema above. Nothing else changes.
+        let store = Self {
+            conn,
+            path,
+            snapshot_revision: None,
+        };
+        if existing.as_deref() != Some(SCHEMA_VERSION) {
             store.set_meta("schema_version", SCHEMA_VERSION)?;
+        }
+        if store.meta("revision")?.is_none() {
+            store.set_meta("revision", &crate::sync::new_revision())?;
         }
         if existing.as_deref() == Some("2") {
             // The site is in GDA2020 / MGA zone 56: fill the ArcGIS export's
@@ -471,14 +503,14 @@ impl Store {
         &self.path
     }
 
-    fn meta(&self, key: &str) -> Result<Option<String>> {
+    pub(crate) fn meta(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
             .optional()
             .map_err(db)
     }
 
-    fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+    pub(crate) fn set_meta(&self, key: &str, value: &str) -> Result<()> {
         self.conn
             .execute(
                 "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -499,10 +531,15 @@ impl Store {
 
     pub fn set_settings(&self, s: &Settings) -> Result<()> {
         s.validate()?;
+        if self.settings()? == *s && self.meta("settings")?.is_some() {
+            return Ok(()); // unchanged: no new revision to share
+        }
         self.set_meta(
             "settings",
             &serde_json::to_string(s).expect("settings serialise"),
-        )
+        )?;
+        // When, so that the newest settings win when two computers' changes meet.
+        self.set_meta("settings_at", &crate::sync::utc_now())
     }
 
     /// Folder scanned for new survey files (e.g. a Trimble Connect Sync folder).
@@ -2002,7 +2039,11 @@ impl Store {
     }
 
     pub fn summary(&self) -> Result<Summary> {
-        let state = self.state()?;
+        self.summary_of(&self.state()?)
+    }
+
+    /// The summary of a state already read.
+    pub(crate) fn summary_of(&self, state: &State) -> Result<Summary> {
         let mut tracker_status: BTreeMap<String, usize> = BTreeMap::new();
         let mut blocks: BTreeMap<String, BlockSummary> = BTreeMap::new();
         for t in &state.trackers {
@@ -2015,6 +2056,7 @@ impl Store {
                     surveyed: 0,
                     trackers: 0,
                     counts: BTreeMap::new(),
+                    reveal_mean: None,
                 });
             b.trackers += 1;
             b.piles += t.n_piles;
@@ -2034,8 +2076,30 @@ impl Store {
             .conn
             .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))
             .map_err(db)?;
+        let mut block_reveals: HashMap<&str, Vec<f64>> = HashMap::new();
+        for p in &state.piles {
+            if let Some(r) = &p.result {
+                block_reveals.entry(&p.block).or_default().push(r.reveal);
+            }
+        }
         let mut blocks: Vec<BlockSummary> = blocks.into_values().collect();
+        for b in &mut blocks {
+            b.reveal_mean = block_reveals
+                .get(b.block.as_str())
+                .and_then(|v| crate::blocks::mean(v));
+        }
         blocks.sort_by_key(|a| natural_key(&a.block));
+        let reveals: Vec<f64> = state
+            .piles
+            .iter()
+            .filter_map(|p| p.result.as_ref().map(|r| r.reveal))
+            .collect();
+        let reveals_survey: Vec<f64> = state
+            .piles
+            .iter()
+            .filter(|p| p.z_source == Some(Kind::Survey))
+            .filter_map(|p| p.result.as_ref().map(|r| r.reveal))
+            .collect();
         Ok(Summary {
             db_path: self.path.display().to_string(),
             piles: state.piles.len(),
@@ -2057,6 +2121,11 @@ impl Store {
                 .iter()
                 .filter(|p| p.result.as_ref().is_some_and(|r| r.min_top_active))
                 .count(),
+            piles_with_result: reveals.len(),
+            reveal_mean: crate::blocks::mean(&reveals),
+            reveal_mean_survey: crate::blocks::mean(&reveals_survey),
+            reveal_min: reveals.iter().copied().reduce(f64::min),
+            reveal_max: reveals.iter().copied().reduce(f64::max),
             stale_trackers: state.trackers.iter().filter(|t| t.stale).count(),
             tracker_status,
             imports: imports as usize,

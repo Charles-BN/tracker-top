@@ -4,39 +4,162 @@
 use crate::settings::Settings;
 use crate::store::{ImportRow, Kind, PileState, State, TrackerState};
 use rust_xlsxwriter::{Format, Workbook, Worksheet, XlsxError};
+use serde::{Deserialize, Serialize};
 
-const PILE_HEADERS: [&str; 30] = [
-    "Pile ID",
-    "Block",
-    "Section",
-    "Tracker",
-    "Tracker Type",
-    "Pile Type",
-    "Color",
-    "Easting",
-    "Northing",
-    "Set-out Easting",
-    "Set-out Northing",
-    "Shift Along Tracker (m)",
-    "Ground Z",
-    "Z Source",
-    "Z Date",
-    "Survey Offset (m)",
-    "Surveys",
-    "Flood Value (m)",
-    "Flood Water Level",
-    "Min ToP (flood)",
-    "Raised For Flood",
-    "NEW_ZG",
-    "Cut/Fill (m)",
-    "ToP",
-    "Reveal (m)",
-    "Angle Diff (deg)",
-    "Tracker Status",
-    "Up To Date",
-    "Run",
-    "Comment",
+/// One column of the Piles sheet. `key` is how export profiles and the page
+/// name it; `group` sorts the columns in the export dialog.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Column {
+    pub key: &'static str,
+    pub header: &'static str,
+    pub group: &'static str,
+}
+
+const fn col(key: &'static str, header: &'static str, group: &'static str) -> Column {
+    Column { key, header, group }
+}
+
+/// Every column of the Piles sheet, in the order of `pile_cells`.
+pub const COLUMNS: [Column; 30] = [
+    col("pile_id", "Pile ID", "Pile"),
+    col("block", "Block", "Pile"),
+    col("section", "Section", "Pile"),
+    col("tracker", "Tracker", "Pile"),
+    col("tracker_type", "Tracker Type", "Pile"),
+    col("pile_type", "Pile Type", "Pile"),
+    col("color", "Color", "Pile"),
+    col("easting", "Easting", "Position"),
+    col("northing", "Northing", "Position"),
+    col("set_easting", "Set-out Easting", "Position"),
+    col("set_northing", "Set-out Northing", "Position"),
+    col("shift", "Shift Along Tracker (m)", "Position"),
+    col("ground_z", "Ground Z", "Ground"),
+    col("z_source", "Z Source", "Ground"),
+    col("z_date", "Z Date", "Ground"),
+    col("survey_offset", "Survey Offset (m)", "Ground"),
+    col("surveys", "Surveys", "Ground"),
+    col("flood_value", "Flood Value (m)", "Flood"),
+    col("flood_level", "Flood Water Level", "Flood"),
+    col("min_top", "Min ToP (flood)", "Flood"),
+    col("raised", "Raised For Flood", "Flood"),
+    col("new_ground", "NEW_ZG", "Result"),
+    col("cut_fill", "Cut/Fill (m)", "Result"),
+    col("top", "ToP", "Result"),
+    col("reveal", "Reveal (m)", "Result"),
+    col("angle", "Angle Diff (deg)", "Result"),
+    col("status", "Tracker Status", "Result"),
+    col("up_to_date", "Up To Date", "Result"),
+    col("run", "Run", "Result"),
+    col("comment", "Comment", "Result"),
 ];
+
+/// Sheets of the workbook, in order.
+pub const SHEETS: [&str; 4] = ["piles", "trackers", "imports", "settings"];
+
+/// What to put in an export. Empty lists mean "everything".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportSpec {
+    /// Column keys of the Piles sheet (see `COLUMNS`), in the order wanted.
+    pub columns: Vec<String>,
+    /// Blocks to include (piles and trackers).
+    pub blocks: Vec<String>,
+    /// Sheets to include (see `SHEETS`).
+    pub sheets: Vec<String>,
+}
+
+impl ExportSpec {
+    /// Indices into `COLUMNS` of the columns wanted.
+    pub fn column_indices(&self) -> Result<Vec<usize>, String> {
+        if self.columns.is_empty() {
+            return Ok((0..COLUMNS.len()).collect());
+        }
+        self.columns
+            .iter()
+            .map(|k| {
+                COLUMNS
+                    .iter()
+                    .position(|c| c.key == k)
+                    .ok_or_else(|| format!("unknown export column \"{k}\""))
+            })
+            .collect()
+    }
+
+    fn sheet(&self, name: &str) -> bool {
+        self.sheets.is_empty() || self.sheets.iter().any(|s| s == name)
+    }
+
+    fn block(&self, block: &str) -> bool {
+        self.blocks.is_empty() || self.blocks.iter().any(|b| b == block)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.column_indices()?;
+        if let Some(s) = self.sheets.iter().find(|s| !SHEETS.contains(&s.as_str())) {
+            return Err(format!("unknown sheet \"{s}\""));
+        }
+        Ok(())
+    }
+}
+
+/// A saved choice of columns and sheets, shared by everyone using the database.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExportProfile {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub sheets: Vec<String>,
+}
+
+/// Profiles of a new database: everything, and what installers need on site.
+pub fn default_profiles() -> Vec<ExportProfile> {
+    let keys = |k: &[&str]| k.iter().map(|s| s.to_string()).collect();
+    vec![
+        ExportProfile {
+            name: "Full".into(),
+            columns: Vec::new(),
+            sheets: Vec::new(),
+        },
+        ExportProfile {
+            name: "Installers".into(),
+            columns: keys(&[
+                "block",
+                "tracker",
+                "pile_id",
+                "pile_type",
+                "color",
+                "set_easting",
+                "set_northing",
+                "ground_z",
+                "top",
+                "reveal",
+                "status",
+                "comment",
+            ]),
+            sheets: keys(&["piles"]),
+        },
+    ]
+}
+
+pub fn validate_profiles(profiles: &[ExportProfile]) -> Result<(), String> {
+    let mut names = std::collections::HashSet::new();
+    for p in profiles {
+        let name = p.name.trim();
+        if name.is_empty() {
+            return Err("every export profile needs a name".into());
+        }
+        if !names.insert(name.to_lowercase()) {
+            return Err(format!("two export profiles are called \"{name}\""));
+        }
+        ExportSpec {
+            columns: p.columns.clone(),
+            blocks: Vec::new(),
+            sheets: p.sheets.clone(),
+        }
+        .validate()
+        .map_err(|e| format!("export profile \"{name}\": {e}"))?;
+    }
+    Ok(())
+}
 
 enum Cell {
     Text(String),
@@ -115,12 +238,31 @@ fn pile_cells(p: &PileState, t: &TrackerState) -> Vec<Cell> {
     ]
 }
 
-fn pile_rows(state: &State) -> impl Iterator<Item = Vec<Cell>> + '_ {
-    state.trackers.iter().flat_map(move |t| {
-        state.piles[t.first_pile..t.first_pile + t.n_piles]
-            .iter()
-            .map(move |p| pile_cells(p, t))
-    })
+/// Rows of the Piles sheet: the blocks and columns of `spec`.
+fn pile_rows<'a>(
+    state: &'a State,
+    spec: &'a ExportSpec,
+    cols: &'a [usize],
+) -> impl Iterator<Item = Vec<Cell>> + 'a {
+    state
+        .trackers
+        .iter()
+        .filter(|t| spec.block(&t.block))
+        .flat_map(move |t| {
+            state.piles[t.first_pile..t.first_pile + t.n_piles]
+                .iter()
+                .map(move |p| {
+                    let mut all: Vec<Option<Cell>> =
+                        pile_cells(p, t).into_iter().map(Some).collect();
+                    cols.iter()
+                        .map(|&i| all[i].take().unwrap_or(Cell::Empty))
+                        .collect()
+                })
+        })
+}
+
+fn headers(cols: &[usize]) -> Vec<&'static str> {
+    cols.iter().map(|&i| COLUMNS[i].header).collect()
 }
 
 fn csv_quote(s: &str) -> String {
@@ -133,9 +275,15 @@ fn csv_quote(s: &str) -> String {
 
 /// One row per pile, comma-separated, `.` decimal mark.
 pub fn piles_csv(state: &State) -> String {
-    let mut out = PILE_HEADERS.join(",");
+    piles_csv_with(state, &ExportSpec::default()).expect("every column exists")
+}
+
+/// The CSV with the columns and blocks of `spec`.
+pub fn piles_csv_with(state: &State, spec: &ExportSpec) -> Result<String, String> {
+    let cols = spec.column_indices()?;
+    let mut out = headers(&cols).join(",");
     out.push('\n');
-    for row in pile_rows(state) {
+    for row in pile_rows(state, spec, &cols) {
         let line: Vec<String> = row
             .iter()
             .map(|c| match c {
@@ -147,7 +295,7 @@ pub fn piles_csv(state: &State) -> String {
         out.push_str(&line.join(","));
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 struct Formats {
@@ -255,81 +403,123 @@ pub fn workbook(
     imports: &[ImportRow],
     settings: &Settings,
 ) -> Result<Vec<u8>, String> {
+    workbook_with(state, imports, settings, &ExportSpec::default(), &[])
+}
+
+/// Workbook with the sheets, columns and blocks of `spec`. `about`, when not
+/// empty, adds an About sheet of (label, value) lines after the Piles sheet.
+pub fn workbook_with(
+    state: &State,
+    imports: &[ImportRow],
+    settings: &Settings,
+    spec: &ExportSpec,
+    about: &[(String, String)],
+) -> Result<Vec<u8>, String> {
+    spec.validate()?;
+    let cols = spec.column_indices()?;
+    if cols.is_empty() && spec.sheet("piles") && spec.sheets.len() == 1 {
+        return Err("choose at least one column".into());
+    }
     let build = || -> Result<Vec<u8>, XlsxError> {
         let f = Formats::new();
         let mut wb = Workbook::new();
 
-        let ws = wb.add_worksheet().set_name("Piles")?;
-        write_sheet(ws, &f, &PILE_HEADERS, pile_rows(state))?;
+        if spec.sheet("piles") {
+            let ws = wb.add_worksheet().set_name("Piles")?;
+            write_sheet(ws, &f, &headers(&cols), pile_rows(state, spec, &cols))?;
+        }
 
-        let ws = wb.add_worksheet().set_name("Trackers")?;
-        write_sheet(
-            ws,
-            &f,
-            &[
-                "Tracker",
-                "Block",
-                "Section",
-                "Tracker Type",
-                "Piles",
-                "Surveyed",
-                "LIDAR only",
-                "No elevation",
-                "Status",
-                "Up To Date",
-                "Max Angle (deg)",
-                "Max Cut/Fill (m)",
-                "Fixed Pile (set-out)",
-                "Max Shift (m)",
-                "Span Check (mm)",
-                "Flood Values",
-                "Raised For Flood",
-                "Run",
-                "Run Date",
-            ],
-            state.trackers.iter().map(tracker_cells),
-        )?;
+        if !about.is_empty() {
+            let ws = wb.add_worksheet().set_name("About")?;
+            for (r, (k, v)) in about.iter().enumerate() {
+                ws.write_string_with_format(r as u32, 0, k, &f.header)?;
+                ws.write_string(r as u32, 1, v)?;
+            }
+            ws.set_column_width(0, 14)?;
+            ws.set_column_width(1, 90)?;
+        }
 
-        let ws = wb.add_worksheet().set_name("Imports")?;
-        write_sheet(
-            ws,
-            &f,
-            &[
-                "Import",
-                "Kind",
-                "File",
-                "Imported At",
-                "Survey Date",
-                "Origin",
-                "Rows",
-                "Used",
-                "Rejected",
-                "Voided At",
-                "Void Reason",
-            ],
-            imports.iter().map(import_cells),
-        )?;
+        if spec.sheet("trackers") {
+            let ws = wb.add_worksheet().set_name("Trackers")?;
+            write_sheet(
+                ws,
+                &f,
+                &[
+                    "Tracker",
+                    "Block",
+                    "Section",
+                    "Tracker Type",
+                    "Piles",
+                    "Surveyed",
+                    "LIDAR only",
+                    "No elevation",
+                    "Status",
+                    "Up To Date",
+                    "Max Angle (deg)",
+                    "Max Cut/Fill (m)",
+                    "Fixed Pile (set-out)",
+                    "Max Shift (m)",
+                    "Span Check (mm)",
+                    "Flood Values",
+                    "Raised For Flood",
+                    "Run",
+                    "Run Date",
+                ],
+                state
+                    .trackers
+                    .iter()
+                    .filter(|t| spec.block(&t.block))
+                    .map(tracker_cells),
+            )?;
+        }
 
-        let ws = wb.add_worksheet().set_name("Settings")?;
-        let json = serde_json::to_value(settings).expect("settings serialise");
-        let rows = json
-            .as_object()
-            .map(|o| {
-                o.iter()
-                    .map(|(k, v)| {
-                        vec![
-                            Cell::Text(k.clone()),
-                            v.as_f64()
-                                .map(|v| Cell::Num(v, 4))
-                                .unwrap_or(Cell::Text(v.to_string())),
-                        ]
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        write_sheet(ws, &f, &["Setting", "Value"], rows.into_iter())?;
-        ws.set_column_width(0, 24)?;
+        if spec.sheet("imports") {
+            let ws = wb.add_worksheet().set_name("Imports")?;
+            write_sheet(
+                ws,
+                &f,
+                &[
+                    "Import",
+                    "Kind",
+                    "File",
+                    "Imported At",
+                    "Survey Date",
+                    "Origin",
+                    "Rows",
+                    "Used",
+                    "Rejected",
+                    "Voided At",
+                    "Void Reason",
+                ],
+                imports.iter().map(import_cells),
+            )?;
+        }
 
+        if spec.sheet("settings") {
+            let ws = wb.add_worksheet().set_name("Settings")?;
+            let json = serde_json::to_value(settings).expect("settings serialise");
+            let rows = json
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .map(|(k, v)| {
+                            vec![
+                                Cell::Text(k.clone()),
+                                v.as_f64()
+                                    .map(|v| Cell::Num(v, 4))
+                                    .unwrap_or(Cell::Text(v.to_string())),
+                            ]
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            write_sheet(ws, &f, &["Setting", "Value"], rows.into_iter())?;
+            ws.set_column_width(0, 24)?;
+        }
+
+        if wb.worksheets().is_empty() {
+            wb.add_worksheet().set_name("Piles")?;
+        }
         wb.save_to_buffer()
     };
     build().map_err(|e| format!("cannot write the Excel file: {e}"))

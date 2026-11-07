@@ -5,7 +5,7 @@
 //! and returns a response (status, content type, body, file name for
 //! downloads). It does no I/O of its own beyond the database.
 
-use crate::export;
+use crate::export::{self, COLUMNS, ExportProfile, ExportSpec};
 use crate::gpkg;
 use crate::settings::Settings;
 use crate::store::{Kind, PileState, Store};
@@ -80,6 +80,8 @@ fn download(name: String, content_type: &str, body: Vec<u8>) -> Routed {
         filename: Some(name),
     })
 }
+
+const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 fn stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H%M").to_string()
@@ -178,6 +180,39 @@ struct SettingsBody {
     watch_folder: Option<String>,
 }
 
+/// Custom export from the query: `spec` (JSON of `ExportSpec`) or `profile`
+/// (a saved profile's columns and sheets), plus `blocks` (JSON list).
+fn export_spec(store: &Store, query: &str) -> Result<Option<ExportSpec>, (u16, String)> {
+    let mut spec = match (query_param(query, "spec"), query_param(query, "profile")) {
+        (Some(json), _) => serde_json::from_str::<ExportSpec>(&json)
+            .map_err(|e| bad(format!("invalid export choice: {e}")))?,
+        (None, Some(name)) => {
+            let p = store.export_profile(&name).map_err(bad)?;
+            ExportSpec {
+                columns: p.columns,
+                blocks: Vec::new(),
+                sheets: p.sheets,
+            }
+        }
+        (None, None) => return Ok(None),
+    };
+    if let Some(blocks) = query_param(query, "blocks") {
+        spec.blocks =
+            serde_json::from_str(&blocks).map_err(|e| bad(format!("invalid block list: {e}")))?;
+    }
+    spec.validate().map_err(bad)?;
+    Ok(Some(spec))
+}
+
+/// Part of a file name for a block choice.
+fn blocks_label(spec: &ExportSpec) -> String {
+    match spec.blocks.as_slice() {
+        [] => String::new(),
+        [b] => format!("_block-{}", crate::blocks::safe_name(b)),
+        many => format!("_{}-blocks", many.len()),
+    }
+}
+
 fn json_body<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, (u16, String)> {
     serde_json::from_slice(body).map_err(|e| bad(format!("invalid request: {e}")))
 }
@@ -188,14 +223,18 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
     let method = req.method.to_ascii_uppercase();
     let threads = host.threads;
     match (method.as_str(), path) {
-        ("GET", "summary") => ok(json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "mode": host.mode,
-            "summary": store.summary().map_err(bad)?,
-            "settings": store.settings().map_err(bad)?,
-            "watch_folder": store.watch_folder().map_err(bad)?,
-            "watch": host.watch,
-        })),
+        ("GET", "summary") => {
+            let state = store.state().map_err(bad)?;
+            ok(json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "mode": host.mode,
+                "summary": store.summary_of(&state).map_err(bad)?,
+                "installers": store.block_status_of(&state).map_err(bad)?,
+                "settings": store.settings().map_err(bad)?,
+                "watch_folder": store.watch_folder().map_err(bad)?,
+                "watch": host.watch,
+            }))
+        }
         ("GET", "state") => ok(state_columns(store).map_err(bad)?),
         ("GET", "imports") => ok(json!(store.imports().map_err(bad)?)),
         ("GET", p) if p.starts_with("imports/") => {
@@ -290,25 +329,74 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
             ok(json!({ "run": run }))
         }
         ("GET", "export.xlsx") => {
-            let bytes = export::workbook(
+            let spec = export_spec(store, req.query)?.unwrap_or_default();
+            let bytes = export::workbook_with(
                 &store.state().map_err(bad)?,
                 &store.imports().map_err(bad)?,
                 &store.settings().map_err(bad)?,
+                &spec,
+                &[],
             )
             .map_err(bad)?;
             download(
-                format!("tracker-top_{}.xlsx", stamp()),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                format!("tracker-top{}_{}.xlsx", blocks_label(&spec), stamp()),
+                XLSX,
                 bytes,
             )
         }
         ("GET", "export.csv") => {
-            let text = export::piles_csv(&store.state().map_err(bad)?);
+            let spec = export_spec(store, req.query)?.unwrap_or_default();
+            let text = export::piles_csv_with(&store.state().map_err(bad)?, &spec).map_err(bad)?;
             download(
-                format!("tracker-top_piles_{}.csv", stamp()),
+                format!("tracker-top_piles{}_{}.csv", blocks_label(&spec), stamp()),
                 "text/csv; charset=utf-8",
                 text.into_bytes(),
             )
+        }
+        ("GET", "export/options") => {
+            let summary = store.summary().map_err(bad)?;
+            ok(json!({
+                "columns": COLUMNS,
+                "sheets": export::SHEETS,
+                "profiles": store.export_profiles().map_err(bad)?,
+                "blocks": summary.blocks,
+            }))
+        }
+        ("PUT", "export/profiles") => {
+            let profiles: Vec<ExportProfile> = json_body(req.body)?;
+            store.set_export_profiles(&profiles).map_err(bad)?;
+            ok(json!({ "profiles": store.export_profiles().map_err(bad)? }))
+        }
+        ("GET", "blocks") => ok(json!(store.block_status().map_err(bad)?)),
+        ("GET", "export/block.xlsx") => {
+            let block = query_param(req.query, "block").unwrap_or_default();
+            let (name, bytes) = store.block_workbook(&block).map_err(bad)?;
+            download(name, XLSX, bytes)
+        }
+        ("POST", "export/block_done") => {
+            let p = |k| query_param(req.query, k).unwrap_or_default();
+            let rev = store
+                .record_block_export(&p("block"), &p("sha"), &p("file"), &p("by"))
+                .map_err(bad)?;
+            ok(json!({ "revision": rev }))
+        }
+        ("GET", "sync/status") => ok(json!(store.sync_status().map_err(bad)?)),
+        ("POST", "sync/incoming") => {
+            let by = query_param(req.query, "by").unwrap_or_default();
+            ok(json!(store.incoming(req.body, &by, threads).map_err(bad)?))
+        }
+        ("POST", "sync/adopt") => {
+            store.adopt(req.body, threads).map_err(bad)?;
+            ok(json!({ "status": store.sync_status().map_err(bad)? }))
+        }
+        ("POST", "sync/snapshot") => {
+            let by = query_param(req.query, "by").unwrap_or_default();
+            let bytes = store.snapshot(&by).map_err(bad)?;
+            download("tracker-top.db".into(), "application/vnd.sqlite3", bytes)
+        }
+        ("POST", "sync/saved") => {
+            store.mark_saved().map_err(bad)?;
+            ok(json!({ "status": store.sync_status().map_err(bad)? }))
         }
         ("GET", "export.gpkg") => {
             let bytes = gpkg::geopackage(

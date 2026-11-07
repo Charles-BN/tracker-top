@@ -13,6 +13,12 @@ Three ways to run it, one code base:
   browser, with the database in a file next to it.
 - **`top`**: the original command-line optimiser (CSV in, CSV out), unchanged.
 
+The desktop program and the browser version can share **one database** through a Google Drive
+folder (or OneDrive, a network drive), with no server: see *Shared database*.
+
+How the code works, for someone who codes a little but is not a Rust expert:
+[docs/HOW-THE-CODE-WORKS.md](docs/HOW-THE-CODE-WORKS.md).
+
 ## Getting it
 
 - **Download**: every push builds Windows, macOS and Linux versions. Open the repository's
@@ -32,10 +38,11 @@ Three ways to run it, one code base:
 Open the site (see *Publishing the browser version*), then use it exactly like the desktop
 application below. Differences:
 
-- The database lives in the browser's storage for that site, on that computer. **Settings →
-  Database → Download a copy** regularly: clearing the browser's site data, or using another
-  browser or computer, starts from an empty database. *Open a database file* loads a copy (from the
-  browser version or the desktop program, which share the same file format).
+- The database lives in the browser's storage for that site, on that computer, unless it is
+  shared (see *Shared database*: then every change is also written to the shared folder). Without
+  sharing, **Settings → Database → Download a copy** regularly: clearing the browser's site data, or
+  using another browser or computer, starts from an empty database. *Open a database file* loads a
+  copy (from the browser version or the desktop program, which share the same file format).
 - The watch folder (Settings) is chosen with the browser's folder picker (Edge, Chrome) and works
   while the page is open.
 - Calculations run on one processor core: importing and optimising the 36,913-pile master list
@@ -57,7 +64,7 @@ downloadable artifact for hosting it elsewhere (e.g. a company web server).
 
 Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the current folder
 (use `--db <file>` to choose another; one database per project) and opens
-<http://127.0.0.1:8770/>. Keep its window open while you work.
+<http://localhost:8770/>. Keep its window open while you work.
 
 1. **Import → Master pile list**, once. Columns: pile ID, Easting, Northing, pile type, colour,
    and tracker, block, section, tracker type when available (without a Tracker column, the
@@ -73,10 +80,16 @@ Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the 
    recomputed.
 6. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
    **History** of imports, and **Export Excel** (sheets *Piles*, *Trackers*, *Imports*,
-   *Settings*), CSV, or **ArcGIS** (GeoPackage, see *ArcGIS* below).
+   *Settings*), **Custom…** (your choice of columns, blocks and sheets, see *Custom export*), CSV,
+   or **ArcGIS** (GeoPackage, see *ArcGIS* below).
 
-Tabs: *Overview* (progress by block), *Import*, *Results*, *3D view*, *History*, *Settings*
-(reveal window, angle limit, survey-matching tolerances, watch folder).
+Tabs: *Overview* (counts, **average reveal**, progress by block with each block's average reveal
+and installers' file), *Import*, *Results*, *3D view*, *History*, *Settings* (reveal window, angle
+limit, survey-matching tolerances, installers' files, watch folder, database, shared database).
+
+The **average reveal** (Overview) is the mean height of the top of pile above the ground elevation
+in use, over every pile with a result, with the lowest and highest values and the mean over the
+surveyed piles only.
 
 ### The master database
 
@@ -197,6 +210,91 @@ A direct connection to the Trimble Connect REST API (OAuth sign-in, polling a pr
 is also possible and would remove the sync client, but needs an application registered with
 Trimble; see *Not done yet*.
 
+### Shared database (Google Drive)
+
+One database for the whole team, on any computer, in the desktop program or the browser version,
+with no server: each computer keeps its own copy and exchanges it with one file, `tracker-top.db`,
+in a shared folder. After every change (and every 30-60 s) a computer reads the shared file if it
+changed, then writes its own when it has something new. When two computers changed things at the
+same time, their changes are **merged**: imports are never edited, only added or voided, so the
+merge is a union (each computer's new imports and voids, the most recent settings, the installers'
+export log), followed by a re-optimisation. The only thing that cannot be merged is two different
+master pile lists: the page then asks which database to keep, and keeps the other as a copy file in
+the folder.
+
+Set it up in **Settings → Shared database** on each computer: give the computer a name (shown as
+"saved by"), then choose one of:
+
+- **Folder on this computer** (Edge, Chrome): with
+  [Google Drive for desktop](https://www.google.com/drive/download/) installed, choose a folder in
+  your Google Drive, e.g. `G:\My Drive\Tracker-top` or a folder of a shared drive. Works the same
+  with OneDrive or a network drive. After a reload the browser asks for permission again (one click
+  on the cloud icon at the top; choose *Allow on every visit* when the browser offers it).
+- **Google Drive online**: nothing to install; sign in with Google and paste the link of the Drive
+  folder. This needs a Google "OAuth client ID" for the site's address, created once (below). Google
+  asks to sign in again after an hour and after a reload (one click).
+
+The first computer that connects writes its database to the folder; a computer with an empty
+database takes the shared one; a computer with its own data merges it. The cloud icon next to the
+database name at the top shows the state (*In step*, *Syncing…*, *Changes not in the shared copy
+yet*, *Reconnect*, *Conflict*). Google Drive keeps earlier versions of `tracker-top.db` (in Drive:
+the file's *Manage versions*). Do not open or edit `tracker-top.db` in the folder directly.
+
+Notes: the desktop program shares while its page is open (watch-folder imports made while it is
+closed are shared when the page opens). Each exchange moves the whole file (about 13 MB for the
+36,913-pile project), which takes a few seconds on a site connection.
+
+**Creating the Google OAuth client ID** (once, for *Google Drive online*; 10 minutes):
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project (e.g.
+   *tracker-top*), with the Google account that will own it.
+2. *APIs & Services → Library*: enable the **Google Drive API**.
+3. *Google Auth Platform* (formerly *OAuth consent screen*) → *Get started*: app name *tracker-top*,
+   your e-mail. Audience **Internal** if your company uses Google Workspace (only its accounts can
+   sign in, no review needed); otherwise **External**, and add each user's Google address under
+   *Audience → Test users* (up to 100).
+4. *Clients → Create client*: type **Web application**; under *Authorized JavaScript origins* add
+   the site's address, `https://charles-bn.github.io`, and for the desktop program
+   `http://localhost:8770`. No redirect URI is needed.
+5. Copy the **Client ID** (`….apps.googleusercontent.com`) and either paste it in *Settings →
+   Shared database → OAuth client ID* on each computer, or put it in `crates/top-app/web/config.js`
+   (`googleClientId`) so that the page has it for everyone. A client ID is not a secret.
+
+The page asks Google for access to the user's Drive files ("See, edit, create and delete…"),
+because it must open the database file written by a colleague. With an *External* app in testing,
+Google first shows "Google hasn't verified this app": *Continue*.
+
+### Installers' files
+
+When **every pile of a block** has a field-survey elevation and **every tracker** of it has a
+current result (by default also: every tracker compliant or graded), the page writes the block's
+Excel file for the installers into the shared folder, in **For installers** (Settings →
+*Installers' files*: on/off, folder name, columns, the compliance condition):
+`Block 30 - pile heights rev 1.xlsx`, with a *Piles* sheet (by default: block, tracker, pile ID, pile
+type, colour, set-out Easting / Northing, ground Z, ToP, reveal, tracker status, comment) and an
+*About* sheet (block, revision, date, number of piles and trackers, how positions and tops were
+made). In Google Drive, share just that folder with the installers.
+
+Each block's file is written once, by whichever computer gets there first, and recorded in the
+database (the Overview's *Installers' file* column shows *✓ rev 1* and the date). If a pile of the
+block is surveyed again and its set-out position or top changes (to the millimetre), the next
+revision is written next to it (`rev 2`), and its *About* sheet says which revision it replaces.
+Re-optimising with the same results does not create a new revision.
+
+### Custom export
+
+**Custom…** (top right) opens a choice of:
+
+- **columns** of the *Piles* sheet (30, grouped: pile, position, ground, flood, result), in the
+  order of the chosen profile;
+- **blocks** (piles and trackers of those blocks only);
+- **sheets** (*Piles*, *Trackers*, *Imports*, *Settings*) and the format (Excel, or CSV of the
+  piles).
+
+A choice of columns and sheets can be saved as a **profile** (*Save as profile…*); profiles are
+stored in the database, so they are shared with everyone using it. Two come with every database:
+*Full* (everything) and *Installers* (the installers' files' columns).
+
 ### 3D view
 
 Ground mesh triangulated through the pile ground elevations (coloured by elevation or by
@@ -259,26 +357,45 @@ solver can be dropped in. `top-core` has no external dependencies.
 crates/top-core   model, params, QP solver, optimiser, CSV I/O (library, std only)
 crates/top-cli    `top` command-line tool (multi-threaded with std::thread::scope)
 crates/top-db     master database (SQLite): import, matching, runs, Excel/CSV export
-crates/top-db     ...including api.rs, the request handler shared by the desktop and browser versions
-crates/top-app    `tracker-top`: local web server (axum) + web page (web/, built into the exe)
+crates/top-db     ...including api.rs, the request handler shared by the desktop and browser versions,
+                  sync.rs (shared database: revisions, merge) and blocks.rs (installers' files)
+crates/top-app    `tracker-top`: local web server (axum) + web page (web/, built into the exe);
+                  web/sync.js moves the shared database to and from the folder or Google Drive
 crates/top-web    browser version: the engine compiled to WebAssembly + worker/bridge (www/)
                   3D with three.js r170 and delaunator, bundled in web/vendor (MIT / ISC)
 testdata/         small synthetic sample
+docs/             how the code works
 ```
 
 ## Verification done
+
+- Shared database, in a real browser (Chromium) with the project master file: the browser version and
+  the desktop program sharing one folder (a stand-in for a Google Drive for desktop folder): the
+  desktop's empty database takes the shared one; an import on one appears on the other; imports made
+  on both at the same time are merged (same 902 surveyed piles and history on both); a different
+  master list on a third computer is reported as a conflict and settled by keeping a copy; export
+  profiles reach the other computer. The same with Google Drive online against a mock of the Drive
+  API (sign-in, folder link, resumable upload of the 13 MB file, folder creation). The real Google
+  sign-in and Drive API need the OAuth client ID and have not been tried yet.
+- Installers' files on the project master file: block 30 (702 piles, 58 trackers) surveyed in two
+  days → `Block 30 - pile heights rev 1.xlsx` written once (Piles sheet: 702 rows with the
+  installers' columns; About sheet); one pile re-surveyed 0.35 m higher → `rev 2`, whose About sheet
+  names the revision it replaces.
+- 38 database tests now (10 more: revision tracking, taking / merging / conflicts between copies, a
+  desktop file and a browser copy with different page sizes, installers' files and revisions, export
+  profiles, custom columns and blocks, average reveal).
 
 - Browser version, in a real browser (Chromium) with the project master file: import and optimisation
   in 2.8 s, survey import, Excel / ArcGIS / CSV / database downloads, data and settings kept after a
   reload, empty database then restore from a downloaded copy; also served from a sub-folder as
   GitHub Pages does.
-- 57 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+- 67 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
   trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable,
-  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 28 database (file formats and header spellings, columns recognised from their values in any
+  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 38 database (file formats and header spellings, columns recognised from their values in any
   order, immutability triggers, duplicate files, ID and position matching, offset and jump checks,
   voiding, incremental re-runs, settings changes, flood layer in both modes, set-out, upgrade of a
   version 2 database in place, Excel and GeoPackage exports, the shared request handler, database
-  copy and restore).
+  copy and restore, shared database, installers' files, custom export).
 - Set-out on the project master file: all 2,792 trackers anchored on their motor pile; an
   independent recheck from the exported Excel file finds every 3D span equal to its design length,
   no motor pile moved, and true angles within 0.70° at the set-out positions.
@@ -309,4 +426,7 @@ testdata/         small synthetic sample
 - Comparing as-built pile positions (survey after piling) with the set-out positions.
 - Direct update of an ArcGIS Online layer (needs an ArcGIS credential).
 - Databases made by the 0.2.0 preview (schema 1) are refused: start a new one and import the master
-  list again. Version 0.3.0 databases (schema 2) are upgraded in place.
+  list again. Databases of versions 0.3 to 0.5 (schemas 2 and 3) are upgraded in place; an older
+  program refuses a database once a 0.6 program has opened it (schema 4), so update every computer
+  that shares a database.
+- Real Google sign-in / Drive API (needs the OAuth client ID, see *Shared database*).

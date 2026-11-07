@@ -149,7 +149,9 @@ async fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     };
     let addr = listener.local_addr().expect("bound address");
-    let shown_host = if args.host == "0.0.0.0" {
+    // "localhost" rather than 127.0.0.1: Google sign-in (shared database on
+    // Google Drive) accepts http://localhost addresses only.
+    let shown_host = if args.host == "0.0.0.0" || args.host == "127.0.0.1" {
         "localhost".to_string()
     } else {
         args.host.clone()
