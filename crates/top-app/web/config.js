@@ -5,5 +5,5 @@
 // once in Google Cloud (see README, "Shared database"), then paste it here so
 // that nobody has to enter it. Client IDs are not secret.
 window.TRACKER_TOP_CONFIG = {
-  googleClientId: '',
+  googleClientId: '688489842449-5is3jauk5ea4eqahua5jp8o4sd9169k4.apps.googleusercontent.com',
 };
