@@ -343,3 +343,4 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 .ex-blocks { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
 .ex-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 @media (max-width: 760px) { .ex-grid { grid-template-columns: 1fr; } }
+.update-bar { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 8px 16px; background: var(--accent-wash); color: var(--ink); border-bottom: 1px solid var(--accent); }

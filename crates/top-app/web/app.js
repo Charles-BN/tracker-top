@@ -1042,6 +1042,31 @@ $('#settings-form').addEventListener('submit', async (e) => {
   }
 });
 
+// ---------------------------------------------------------------- updates
+
+// Browser version: browsers and company proxies may keep the old site's files
+// for a while after an update. version.json is read past every cache; when it
+// names another build, offer to reload. The new address (?v=...) makes sure the
+// page itself is fetched again.
+let updateOffered = false;
+async function checkForUpdate() {
+  if (updateOffered) return;
+  try {
+    const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const { build } = await res.json();
+    if (!build || build === window.TRACKER_TOP_BUILD) return;
+    updateOffered = true;
+    const bar = document.createElement('div');
+    bar.className = 'update-bar';
+    bar.innerHTML = '<span>A new version of tracker-top is available.</span> <button class="btn small primary" type="button">Reload now</button>';
+    bar.querySelector('button').addEventListener('click', () => {
+      location.replace(`${location.pathname}?v=${encodeURIComponent(build)}${location.hash}`);
+    });
+    document.body.prepend(bar);
+  } catch { /* offline: try again later */ }
+}
+
 // ---------------------------------------------------------------- start
 
 async function poll() {
@@ -1111,4 +1136,9 @@ async function poll() {
   await show(location.hash.slice(1) || 'overview', true);
   sync.load().catch((e) => toast(`Shared database: ${e.message}`, true));
   setInterval(poll, 15000);
+  if (window.TRACKER_TOP_BUILD) {
+    checkForUpdate();
+    setInterval(checkForUpdate, 5 * 60_000);
+    window.addEventListener('focus', checkForUpdate);
+  }
 })();
