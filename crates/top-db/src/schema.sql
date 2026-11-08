@@ -10,6 +10,12 @@
 --              see the flood_mode setting). Append-only.
 -- runs         optimisation runs; run_trackers / run_piles hold their results.
 --              Append-only. The current result of a tracker is its latest run.
+-- block_exports files sent to the installers, one row per block and revision.
+--              Append-only.
+--
+-- meta 'revision' changes, through the triggers at the end, whenever anything
+-- another computer should receive changes. Copies of the database on several
+-- computers compare it to tell whether they are in step (see sync.rs).
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -178,3 +184,39 @@ CREATE TRIGGER IF NOT EXISTS run_piles_no_update BEFORE UPDATE ON run_piles
 BEGIN SELECT RAISE(ABORT, 'optimisation runs are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS run_piles_no_delete BEFORE DELETE ON run_piles
 BEGIN SELECT RAISE(ABORT, 'optimisation runs are append-only'); END;
+
+CREATE TABLE IF NOT EXISTS block_exports (
+    export_id   INTEGER PRIMARY KEY,
+    block       TEXT NOT NULL,
+    revision    INTEGER NOT NULL,
+    content_sha TEXT NOT NULL,
+    file_name   TEXT NOT NULL,
+    exported_at TEXT NOT NULL,
+    exported_by TEXT NOT NULL,
+    piles       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS block_exports_block ON block_exports (block, revision);
+
+CREATE TRIGGER IF NOT EXISTS block_exports_no_update BEFORE UPDATE ON block_exports
+BEGIN SELECT RAISE(ABORT, 'the installer export log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS block_exports_no_delete BEFORE DELETE ON block_exports
+BEGIN SELECT RAISE(ABORT, 'the installer export log is append-only'); END;
+
+-- A new revision for every change worth sharing. Settings of this computer
+-- only (watch folder, sync state) do not count. (A plain UPDATE: SQLite applies
+-- the conflict rule of the statement that fires a trigger to the trigger's own
+-- statements, so INSERT OR REPLACE would fail under an upsert.)
+CREATE TRIGGER IF NOT EXISTS revision_import AFTER INSERT ON imports
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
+CREATE TRIGGER IF NOT EXISTS revision_void AFTER UPDATE ON imports
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
+CREATE TRIGGER IF NOT EXISTS revision_run AFTER INSERT ON runs
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
+CREATE TRIGGER IF NOT EXISTS revision_block_export AFTER INSERT ON block_exports
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
+CREATE TRIGGER IF NOT EXISTS revision_settings_insert AFTER INSERT ON meta
+WHEN NEW.key IN ('settings', 'export_profiles')
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
+CREATE TRIGGER IF NOT EXISTS revision_settings_update AFTER UPDATE ON meta
+WHEN NEW.key IN ('settings', 'export_profiles')
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;

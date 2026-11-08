@@ -315,3 +315,31 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
   .tab { padding: 16px; }
   .actions { margin-left: 0; }
 }
+/* Shared database */
+.sync-chip {
+  font: inherit; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2); white-space: nowrap;
+}
+.sync-chip.ok { color: var(--success-text); }
+.sync-chip.warn { color: var(--warning-text); border-color: var(--warning); }
+.sync-chip.bad { color: var(--critical-text); border-color: var(--critical); }
+.sync-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--notrun); vertical-align: 0; }
+.sync-dot.ok { background: var(--good); }
+.sync-dot.warn { background: var(--warning); }
+.sync-dot.bad { background: var(--critical); }
+.sync-dot.busy { background: var(--accent); }
+#share-pill { font-size: 13px; color: var(--ink-2); }
+.option { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.option .field { width: 100%; }
+.option .field input { width: 100%; }
+.conflict { border: 1px solid var(--critical); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; background: rgba(208, 59, 59, 0.06); }
+/* Custom export */
+.ex-top { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin: 12px 0 14px; }
+.ex-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, 0.9fr); gap: 18px; }
+.ex-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; font-size: 12.5px; }
+.ex-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 4px 12px; max-height: 52vh; overflow: auto; }
+.ex-cols fieldset { border: 0; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 3px; }
+.ex-cols legend { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+.ex-blocks { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 3px; }
+.ex-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+@media (max-width: 760px) { .ex-grid { grid-template-columns: 1fr; } }

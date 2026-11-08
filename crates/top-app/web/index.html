@@ -7,11 +7,13 @@
 <link rel="stylesheet" href="style.css">
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/" } }</script>
 <script src="vendor/delaunator.min.js"></script>
+<script src="config.js"></script>
 <script type="module" src="app.js"></script>
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">tracker-top <small id="db-path" title=""></small></div>
+  <div class="brand">tracker-top <small id="db-path" title=""></small>
+    <button type="button" class="sync-chip" id="sync-chip" hidden></button></div>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
     <button role="tab" data-tab="import" aria-selected="false">Import</button>
@@ -22,7 +24,8 @@
   </nav>
   <div class="actions">
     <button class="btn" id="btn-optimize" title="Optimise every tracker whose elevations or settings changed">Optimise <span id="stale-count" class="count-badge" hidden></span></button>
-    <a class="btn" href="api/export.xlsx" download>Export Excel</a>
+    <a class="btn" href="api/export.xlsx" download title="Every pile with every column, all trackers, imports and settings">Export Excel</a>
+    <button class="btn" type="button" id="btn-custom" title="Choose the columns, blocks and sheets to export">Custom…</button>
     <a class="btn" href="api/export.csv" download>CSV</a>
     <a class="btn" href="api/export.gpkg" download id="btn-gpkg" title="GeoPackage for ArcGIS Pro / ArcGIS Online / QGIS: piles and trackers, with all results">ArcGIS</a>
   </div>
@@ -170,6 +173,24 @@
         </div>
       </div>
       <div class="card">
+        <div class="card-head"><h2>Installers' files</h2><span class="muted">Written to the shared folder (see Shared database below).</span></div>
+        <div class="settings-grid">
+          <label class="check" style="align-self:start"><input type="checkbox" name="auto_export">
+            <span>When a whole block is surveyed and its pile heights are calculated, write its Excel file for the installers</span></label>
+          <label class="field"><span>Folder, inside the shared folder</span>
+            <input type="text" name="auto_export_folder" required>
+            <small>Created if needed. Use / for a subfolder. Share just this folder with the installers in Google Drive.</small>
+          </label>
+          <label class="field"><span>Columns of the file (export profile)</span>
+            <select name="auto_export_profile"></select>
+            <small>Profiles are edited with Custom… (top right).</small>
+          </label>
+          <label class="check" style="align-self:start"><input type="checkbox" name="auto_export_require_ok">
+            <span>Wait until every tracker of the block is compliant or graded</span></label>
+        </div>
+        <p class="muted" style="margin-top:10px;font-size:12.5px">One file per block, written once. If a pile of the block is surveyed again and its position or height changes, a new revision is written next to it (rev 2, rev 3…); its About sheet says which revision it replaces.</p>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>Watch folder</h2><span class="muted">Automatic import, for example from Trimble Connect Sync.</span></div>
         <div id="watch-browser" class="browser-only" hidden>
           <p class="ink2">Choose a folder on this computer, for example your Trimble Connect Sync folder. While this page is open, every new CSV / TXT / Excel file in it (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Works in Edge and Chrome.</p>
@@ -199,6 +220,10 @@
         <button type="button" class="btn danger browser-only" id="db-reset" hidden>Start a new, empty database…</button>
       </div>
       <input type="file" id="db-file" accept=".db,.sqlite,.sqlite3" hidden>
+    </div>
+    <div class="card" style="margin-top:16px" id="share-card">
+      <div class="card-head"><h2>Shared database</h2><span id="share-pill"></span></div>
+      <div id="share-body"></div>
     </div>
   </section>
 </main>

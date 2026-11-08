@@ -1,4 +1,5 @@
 import { renderProfile } from './profile.js';
+import { createSync, folderAccessSupported } from './sync.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -36,9 +37,52 @@ const swatch = (c) => (c ? `<span class="sw-dot" style="background:${esc(siteCol
 // Browser version: the engine runs in the page (WebAssembly) instead of the
 // desktop program; see browser.js. Set by the browser build's index.html.
 const BROWSER = !!window.TRACKER_TOP_BROWSER;
+const CONFIG = window.TRACKER_TOP_CONFIG || {};
 let browser = null;
+let sync = null; // shared database (sync.js)
 
+/** API call answering JSON. Changes are passed on to the shared database. */
 async function api(method, url, body, raw = false) {
+  const data = await apiCall(method, url, body, raw);
+  if (method !== 'GET' && !/api\/(sync\/|export\/block_done)/.test(url)) sync?.changed();
+  return data;
+}
+
+/** API call answering a file: { bytes, filename }. */
+async function apiRaw(method, url, body) {
+  if (BROWSER) {
+    const r = await browser.request(method, url, body, true);
+    if (r.status >= 400) {
+      let msg = `error ${r.status}`;
+      try { msg = JSON.parse(new TextDecoder().decode(r.body)).error ?? msg; } catch { /* not JSON */ }
+      throw new Error(msg);
+    }
+    return { bytes: new Uint8Array(r.body), filename: r.filename };
+  }
+  const res = await fetch(url, { method, body, headers: body ? { 'Content-Type': 'application/octet-stream' } : {} });
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = text || res.statusText;
+    try { msg = JSON.parse(text).error ?? msg; } catch { /* not JSON */ }
+    throw new Error(msg);
+  }
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
+  return { bytes: new Uint8Array(await res.arrayBuffer()), filename: m ? decodeURIComponent(m[1]) : null };
+}
+
+/** Download a GET API file (exports). */
+async function downloadUrl(url) {
+  if (BROWSER) return browser.download(url);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function apiCall(method, url, body, raw = false) {
   if (BROWSER) {
     const r = await browser.request(method, url, body, raw);
     const text = new TextDecoder().decode(r.body);
@@ -153,7 +197,8 @@ function stackBar(counts, total, thin = false) {
 }
 
 renderers.overview = async () => {
-  const { summary: s, watch: w0, watch_folder: wf } = await loadSummary(true);
+  const { summary: s, watch: w0, watch_folder: wf, installers } = await loadSummary(true);
+  const inst = Object.fromEntries((installers || []).map((b) => [b.block, b]));
   const watch = BROWSER ? browser.watch : w0;
   const watch_folder = BROWSER ? browser.watch.folder : wf;
   const el = $('#tab-overview');
@@ -182,12 +227,15 @@ renderers.overview = async () => {
       <td class="bar-cell"><div style="display:flex;align-items:center;gap:8px"><div class="mini-bar" style="flex:1"><span style="width:${pct(b.surveyed, b.piles)}%"></span></div><span class="num" style="width:3.5em">${pct(b.surveyed, b.piles)}%</span></div></td>
       <td class="bar-cell">${stackBar(b.counts, b.trackers, true)}</td>
       ${['Compliant', 'Graded', 'NonCompliant', 'AwaitingSurvey'].map((k) => `<td class="num">${int(b.counts[k] || 0)}</td>`).join('')}
+      <td class="num">${b.reveal_mean == null ? '–' : fmt(b.reveal_mean, 3)}</td>
+      <td>${installerCell(inst[b.block])}</td>
     </tr>`).join('');
   const events = (watch.events || []).slice(0, 4).map((e) => `<li>${e.accepted ? '<span class="pill ok">✓</span>' : '<span class="pill bad">✕</span>'} <b>${esc(e.file)}</b> <span class="muted">${esc(e.at)}</span><br><span class="ink2">${esc(e.message)}</span></li>`).join('');
   el.innerHTML = `
     <div class="tiles">
       <div class="tile"><div class="label">Piles in master list</div><div class="value">${int(s.piles)}</div><div class="sub">${int(s.trackers)} trackers · ${s.blocks.length} block${s.blocks.length === 1 ? '' : 's'}</div></div>
       <div class="tile"><div class="label">Piles surveyed</div><div class="value">${int(s.piles_surveyed)}</div><div class="sub">${pct(s.piles_surveyed, s.piles)}% of piles</div></div>
+      <div class="tile" title="Top of pile above the ground elevation in use, over every pile with a result"><div class="label">Average reveal</div><div class="value">${s.reveal_mean == null ? '–' : `${fmt(s.reveal_mean, 3)} m`}</div><div class="sub">${s.reveal_mean == null ? 'no results yet' : `${int(s.piles_with_result)} piles · ${fmt(s.reveal_min, 2)} to ${fmt(s.reveal_max, 2)} m${s.reveal_mean_survey != null && s.reveal_mean_survey !== s.reveal_mean ? ` · surveyed ${fmt(s.reveal_mean_survey, 3)} m` : ''}`}</div></div>
       <div class="tile"><div class="label">LIDAR ground only</div><div class="value">${int(s.piles_lidar_only)}</div><div class="sub">not surveyed yet</div></div>
       <div class="tile"><div class="label">No elevation</div><div class="value">${int(s.piles_no_elevation)}</div><div class="sub">trackers wait for these</div></div>
       <div class="tile"><div class="label">Trackers with a valid ToP</div><div class="value">${int(done)}</div><div class="sub">${pct(done, s.trackers)}% · ${int(st.Graded || 0)} need cut/fill</div></div>
@@ -202,7 +250,7 @@ renderers.overview = async () => {
     <div class="card">
       <div class="card-head"><h2>Progress by block</h2></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Block</th><th class="num">Trackers</th><th class="num">Piles</th><th>Surveyed</th><th>Status</th><th class="num">Compliant</th><th class="num">Graded</th><th class="num">Non-compliant</th><th class="num">Awaiting</th></tr></thead>
+        <thead><tr><th>Block</th><th class="num">Trackers</th><th class="num">Piles</th><th>Surveyed</th><th>Status</th><th class="num">Compliant</th><th class="num">Graded</th><th class="num">Non-compliant</th><th class="num">Awaiting</th><th class="num" title="Mean reveal of the block's piles with a result">Avg reveal (m)</th><th title="Excel file for the installers, written to the shared folder once the block is complete">Installers' file</th></tr></thead>
         <tbody>${blocks}</tbody>
       </table></div>
     </div>
@@ -213,11 +261,173 @@ renderers.overview = async () => {
       <div class="card"><div class="card-head"><h3>Last optimisation</h3></div>
         ${lastRun ? `<p class="ink2">${esc(lastRun.created_at)} · ${esc(lastRun.trigger)}</p><p>${esc(runText(lastRun))}</p>` : '<p class="muted">Not run yet.</p>'}
       </div>
+      <div class="card"><div class="card-head"><h3>Shared database</h3><a href="#settings">Settings</a></div><div id="ov-share"></div></div>
       <div class="card"><div class="card-head"><h3>Watch folder</h3><a href="#settings">Settings</a></div>
         ${watch_folder ? `<p class="mono" style="word-break:break-all">${esc(watch_folder)}</p><p class="ink2">${watch.error ? `<span style="color:var(--critical-text)">${esc(watch.error)}</span>` : `Last scan ${esc(watch.last_scan || 'pending')}`}</p>${events ? `<ul class="findings">${events}</ul>` : ''}` : '<p class="muted">Off. Set a folder in Settings to import new survey files automatically (for example a Trimble Connect Sync folder).</p>'}
       </div>
     </div>`;
+  renderShareSummary();
 };
+
+function installerCell(b) {
+  if (!b) return '';
+  const last = b.last_export;
+  if (b.needs_export) {
+    const where = sync?.state.target ? 'written at the next sync' : 'connect a shared folder to send it';
+    const settings = cache.summary?.settings;
+    return settings && !settings.auto_export
+      ? `<span class="muted" title="Turned off in Settings > Installers' files">ready${last ? ` (rev ${b.next_revision})` : ''}</span>`
+      : `<span class="pill ok" title="${esc(where)}">ready${last ? ` · rev ${b.next_revision}` : ''}</span>`;
+  }
+  if (last) return `<span title="${esc(last.file_name)}, ${esc(last.exported_at)} by ${esc(last.exported_by)}">✓ rev ${last.revision} <span class="muted">${esc(last.exported_at.slice(0, 10))}</span></span>`;
+  const waiting = b.surveyed < b.piles ? `${int(b.piles - b.surveyed)} piles not surveyed yet`
+    : b.current < b.trackers ? `${int(b.trackers - b.current)} trackers to optimise`
+      : b.waiting;
+  return `<span class="muted"${b.ok < b.trackers ? ` title="${esc(b.waiting)}"` : ''}>${esc(waiting)}</span>`;
+}
+
+// ---------------------------------------------------------------- shared database
+
+const utcText = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(+d) ? iso : d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+};
+
+/** One line on the state of the shared database: [css class, text]. */
+function shareState() {
+  const st = sync?.state;
+  if (!st?.target) return ['off', 'Not shared'];
+  if (st.phase === 'needs-permission') return ['warn', st.mode === 'drive' ? 'Sign in to Google Drive' : 'Reconnect the shared folder'];
+  if (st.phase === 'conflict') return ['bad', 'Conflict: choose which database to keep'];
+  if (st.phase === 'error') return ['bad', 'Sync problem'];
+  if (st.phase === 'working') return ['busy', 'Syncing…'];
+  if (!st.status) return ['busy', 'Checking…'];
+  if (st.status.dirty) return ['warn', 'Changes not in the shared copy yet'];
+  return ['ok', 'In step with the shared copy'];
+}
+
+function renderSyncChip() {
+  const chip = $('#sync-chip');
+  const st = sync?.state;
+  if (!st?.target) { chip.hidden = true; return; }
+  const [cls, text] = shareState();
+  chip.hidden = false;
+  chip.className = `sync-chip ${cls}`;
+  chip.textContent = cls === 'ok' ? '☁ In step' : `☁ ${text}`;
+  chip.title = `${st.target.label}${st.lastCheck ? ` · checked ${st.lastCheck.toLocaleTimeString()}` : ''}${st.message ? `\n${st.message}` : ''}`;
+}
+
+$('#sync-chip').addEventListener('click', async () => {
+  if (sync?.state.phase === 'needs-permission') {
+    try { await sync.reconnect(); } catch (e) { toast(e.message, true); }
+  } else {
+    show('settings');
+  }
+});
+
+function renderShareSummary() {
+  const el = $('#ov-share');
+  if (!el) return;
+  const st = sync?.state;
+  const [cls, text] = shareState();
+  if (!st?.target) {
+    el.innerHTML = '<p class="muted">Off. Share one database between computers and the browser version through Google Drive: Settings &gt; Shared database.</p>';
+    return;
+  }
+  const status = st.status;
+  el.innerHTML = `<p><span class="sync-dot ${cls}"></span><b>${esc(text)}</b></p>
+    <p class="ink2" style="margin-top:4px">${esc(st.target.label)}<br>${status?.saved_by ? `Last saved by ${esc(status.saved_by)}, ${esc(utcText(status.saved_at))}` : ''}</p>
+    ${st.message && cls !== 'ok' ? `<p class="ink2" style="margin-top:4px">${esc(st.message)}</p>` : ''}`;
+}
+
+function renderShareCard() {
+  const st = sync.state;
+  const [cls, text] = shareState();
+  $('#share-pill').innerHTML = `<span class="sync-dot ${cls}"></span>${esc(text)}`;
+  const body = $('#share-body');
+  const nameField = `<label class="field" style="max-width:420px"><span>Name of this computer, shown to the others as who saved</span>
+      <input type="text" id="share-name" value="${esc(st.name)}" placeholder="e.g. Site office laptop" maxlength="60"></label>`;
+  if (!st.target) {
+    const clientId = st.drive.clientId || CONFIG.googleClientId || '';
+    body.innerHTML = `
+      <p class="ink2">One database for everyone, kept in a shared folder: the desktop program and the browser version, on this computer or any other, all use it. Each computer keeps its own copy and exchanges it with the shared folder after every change, and every minute or so; changes made at the same time on two computers are merged. No server is involved.</p>
+      <div style="margin-top:12px">${nameField}</div>
+      <div class="grid cols-2" style="margin-top:14px">
+        <div class="option">
+          <h3>Folder on this computer</h3>
+          <p class="ink2">With <b>Google Drive for desktop</b> installed, choose a folder in your Google Drive, for example <span class="mono">G:\My Drive\Tracker-top</span> or a shared drive. Also works with OneDrive or a network drive. Edge or Chrome.</p>
+          <button type="button" class="btn primary" id="share-folder"${folderAccessSupported() ? '' : ' disabled title="Needs Microsoft Edge or Google Chrome"'}>Choose the shared folder…</button>
+        </div>
+        <div class="option">
+          <h3>Google Drive online</h3>
+          <p class="ink2">Nothing to install: sign in with Google. Paste the link of the shared Drive folder (open the folder in Drive and copy the address).${clientId ? '' : ' Needs a Google “OAuth client ID” for this web address, created once (README, Shared database).'}</p>
+          <label class="field"><span>Drive folder link</span><input type="text" id="share-link" placeholder="https://drive.google.com/drive/folders/…" value="${st.drive.folderId ? `https://drive.google.com/drive/folders/${esc(st.drive.folderId)}` : ''}"></label>
+          <label class="field"><span>Folder name, as shown here</span><input type="text" id="share-folder-name" placeholder="Tracker-top" value="${esc(st.drive.folderName)}"></label>
+          <label class="field"${CONFIG.googleClientId ? ' hidden' : ''}><span>OAuth client ID</span><input type="text" id="share-client" value="${esc(clientId)}" placeholder="….apps.googleusercontent.com"></label>
+          <button type="button" class="btn" id="share-drive">Connect to Google Drive</button>
+        </div>
+      </div>`;
+    const name = () => {
+      const n = $('#share-name').value.trim();
+      if (!n) { $('#share-name').focus(); throw new Error('Give this computer a name first (shown as who saved).'); }
+      return n;
+    };
+    $('#share-folder').addEventListener('click', async () => {
+      try {
+        await sync.connectFolder(name());
+        toast(`Sharing through ${sync.state.target.label}.`);
+      } catch (e) { if (e.name !== 'AbortError') toast(e.message, true); }
+      renderShareCard();
+    });
+    $('#share-drive').addEventListener('click', async () => {
+      try {
+        await sync.connectDrive(name(), $('#share-client').value, $('#share-link').value, $('#share-folder-name').value);
+        toast(`Sharing through ${sync.state.target.label}.`);
+      } catch (e) { toast(e.message, true); }
+      renderShareCard();
+    });
+    return;
+  }
+  const status = st.status;
+  body.innerHTML = `
+    <div class="kv">
+      <div><span>Shared copy</span><b>${esc(st.target.label)}</b></div>
+      <div><span>This computer</span><b>${esc(st.name || 'unnamed')}</b></div>
+      <div><span>Last saved to the shared folder</span><b>${(() => {
+        const by = status?.saved_by ?? st.lastReport?.saved_by;
+        const at = status?.saved_by ? status.saved_at : st.lastReport?.saved_at;
+        return by ? `${esc(by)}, ${esc(utcText(at))}` : '–';
+      })()}</b></div>
+      <div><span>Last check</span><b>${st.lastCheck ? st.lastCheck.toLocaleTimeString() : '–'}</b></div>
+    </div>
+    ${st.phase === 'conflict' ? `<div class="conflict">
+        <p><b>The shared database and this computer's cannot be merged.</b></p>
+        <p class="ink2" style="margin:4px 0 10px">${esc(st.message)}</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn primary" id="share-use">Use the shared database</button>
+          <button type="button" class="btn danger" id="share-replace">Replace it with this computer's</button>
+        </div>
+        <p class="muted" style="margin-top:8px;font-size:12.5px">Either way, the database that is replaced is first kept as a copy in the shared folder.</p>
+      </div>` : ''}
+    ${st.phase === 'error' ? `<p style="color:var(--critical-text);margin-bottom:8px">${esc(st.message)}</p>` : ''}
+    ${st.phase === 'needs-permission' ? `<p class="stale" style="margin-bottom:8px">${st.mode === 'drive' ? 'Sign in to Google Drive to continue (Google asks again after an hour or after a reload).' : 'The browser asks for your permission again before it uses the shared folder after a reload (choose “Allow on every visit” when offered).'}</p>` : ''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+      ${st.phase === 'needs-permission' ? '<button type="button" class="btn primary" id="share-reconnect">Reconnect</button>' : '<button type="button" class="btn" id="share-now">Sync now</button>'}
+      ${nameField}
+      <button type="button" class="btn danger" id="share-off">Stop sharing on this computer</button>
+    </div>
+    <p class="muted" style="margin-top:10px;font-size:12.5px">The shared file is <span class="mono">tracker-top.db</span> in that folder; don't open or edit it there. Google Drive keeps its earlier versions (in Drive: right-click the file &gt; File information &gt; Manage versions).</p>`;
+  $('#share-now')?.addEventListener('click', () => sync.sync('manual'));
+  $('#share-reconnect')?.addEventListener('click', async () => { try { await sync.reconnect(); } catch (e) { toast(e.message, true); } });
+  $('#share-name').addEventListener('change', (e) => sync.rename(e.target.value));
+  $('#share-off').addEventListener('click', () => openDialog('<h2>Stop sharing on this computer?</h2><p class="ink2" style="margin-top:8px">This computer keeps its copy of the database and stops exchanging it with the shared folder. The shared copy and the other computers are not affected.</p>',
+    [['Cancel', null], ['Stop sharing', async () => { await sync.disconnect(); toast('No longer shared on this computer.'); }, 'danger']]));
+  $('#share-use')?.addEventListener('click', () => openDialog('<h2>Use the shared database?</h2><p class="ink2" style="margin-top:8px">This computer\'s database is saved in the shared folder as a copy, then replaced by the shared one.</p>',
+    [['Cancel', null], ['Use the shared one', async () => { await sync.useShared(); }, 'danger']]));
+  $('#share-replace')?.addEventListener('click', () => openDialog('<h2>Replace the shared database?</h2><p class="ink2" style="margin-top:8px">The shared database is saved in the folder as a copy, then replaced by this computer\'s. The other computers then get this one (a computer with its own unsaved changes will report the same conflict).</p>',
+    [['Cancel', null], ['Replace it', async () => { await sync.replaceShared(); toast('The shared database now is this computer\'s.'); }, 'danger']]));
+}
 
 // ---------------------------------------------------------------- import
 
@@ -545,7 +755,7 @@ function openDialog(html, buttons) {
   actions.innerHTML = '';
   for (const [label, fn, cls] of buttons) {
     const b = document.createElement('button');
-    b.className = `btn ${cls === 'danger' ? 'primary' : ''}`;
+    b.className = `btn ${cls === 'danger' || cls === 'primary' ? 'primary' : ''}`;
     if (cls === 'danger') b.style.background = 'var(--critical)';
     if (cls === 'danger') b.style.borderColor = 'var(--critical)';
     b.textContent = label;
@@ -557,6 +767,143 @@ function openDialog(html, buttons) {
   }
   d.showModal();
 }
+
+// ---------------------------------------------------------------- custom export
+
+const SHEET_LABEL = { piles: 'Piles', trackers: 'Trackers', imports: 'Imports', settings: 'Settings' };
+let exportChoice = null;
+try { exportChoice = JSON.parse(localStorage.getItem('tracker-top-export') || 'null'); } catch { /* not kept */ }
+
+async function openExportDialog() {
+  const opt = await api('GET', 'api/export/options');
+  const keys = opt.columns.map((c) => c.key);
+  const blocks = opt.blocks.map((b) => b.block);
+  let profiles = opt.profiles;
+  const ch = {
+    profile: 'Full', columns: keys, blocks, sheets: [...opt.sheets], format: 'xlsx',
+    ...(exportChoice || {}),
+  };
+  ch.columns = ch.columns.filter((k) => keys.includes(k));
+  ch.blocks = ch.blocks.filter((b) => blocks.includes(b));
+  if (exportChoice && !exportChoice.blocks?.length) ch.blocks = blocks;
+  const groups = [...new Set(opt.columns.map((c) => c.group))];
+  const box = (name, value, label, checked, extra = '') => `<label class="check"><input type="checkbox" name="${name}" value="${esc(value)}"${checked ? ' checked' : ''}> ${label}${extra}</label>`;
+  openDialog(`
+    <h2>Custom export</h2>
+    <div class="ex-top">
+      <label class="field"><span>Profile (a saved choice of columns and sheets, shared)</span>
+        <select id="ex-profile">${profiles.map((p) => `<option${p.name === ch.profile ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="">(custom)</option></select></label>
+      <button type="button" class="btn small" id="ex-save">Save as profile…</button>
+      <button type="button" class="btn small danger" id="ex-delete">Delete profile</button>
+      <span id="ex-save-row" hidden style="display:inline-flex;gap:6px;align-items:center"><input type="text" id="ex-name" placeholder="Profile name" maxlength="40"><button type="button" class="btn small primary" id="ex-save-ok">Save</button></span>
+    </div>
+    <div class="ex-grid">
+      <section>
+        <div class="ex-head"><h3>Columns <span class="muted" id="ex-ncols"></span></h3><span><a href="#" data-set="col:all">All</a> · <a href="#" data-set="col:none">None</a></span></div>
+        <div class="ex-cols">${groups.map((g) => `<fieldset><legend>${esc(g)}</legend>${opt.columns.filter((c) => c.group === g).map((c) => box('col', c.key, esc(c.header), ch.columns.includes(c.key))).join('')}</fieldset>`).join('')}</div>
+      </section>
+      <section>
+        <div class="ex-head"><h3>Blocks <span class="muted" id="ex-nblocks"></span></h3><span><a href="#" data-set="blk:all">All</a> · <a href="#" data-set="blk:none">None</a></span></div>
+        <div class="ex-blocks">${opt.blocks.map((b) => box('blk', b.block, esc(b.block || '(no block)'), ch.blocks.includes(b.block), ` <span class="muted">${int(b.piles)} piles · ${pct(b.surveyed, b.piles)}% surveyed</span>`)).join('')}</div>
+      </section>
+      <section>
+        <h3>Sheets</h3>
+        <div class="ex-list">${opt.sheets.map((sh) => box('sheet', sh, SHEET_LABEL[sh] || sh, ch.sheets.includes(sh))).join('')}</div>
+        <h3 style="margin-top:14px">Format</h3>
+        <div class="ex-list">
+          <label class="check"><input type="radio" name="ex-format" value="xlsx"${ch.format !== 'csv' ? ' checked' : ''}> Excel (.xlsx)</label>
+          <label class="check"><input type="radio" name="ex-format" value="csv"${ch.format === 'csv' ? ' checked' : ''}> CSV, piles only</label>
+        </div>
+      </section>
+    </div>`, [['Cancel', null], ['Export', () => runExport(opt), 'primary']]);
+
+  const d = $('#dialog');
+  const checked = (name) => $$(`input[name="${name}"]`, d).filter((i) => i.checked).map((i) => i.value);
+  const count = () => {
+    $('#ex-ncols').textContent = `${checked('col').length} of ${keys.length}`;
+    $('#ex-nblocks').textContent = `${checked('blk').length} of ${blocks.length}`;
+  };
+  const applyProfile = (name) => {
+    const p = profiles.find((x) => x.name === name);
+    if (!p) return;
+    const cols = p.columns.length ? p.columns : keys;
+    const sheets = p.sheets.length ? p.sheets : opt.sheets;
+    $$('input[name="col"]', d).forEach((i) => { i.checked = cols.includes(i.value); });
+    $$('input[name="sheet"]', d).forEach((i) => { i.checked = sheets.includes(i.value); });
+    count();
+  };
+  $('#ex-profile').addEventListener('change', (e) => applyProfile(e.target.value));
+  d.querySelectorAll('input[name="col"], input[name="sheet"]').forEach((i) => i.addEventListener('change', () => { $('#ex-profile').value = ''; count(); }));
+  d.querySelectorAll('input[name="blk"]').forEach((i) => i.addEventListener('change', count));
+  d.querySelectorAll('[data-set]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const [name, what] = a.dataset.set.split(':');
+    $$(`input[name="${name}"]`, d).forEach((i) => { i.checked = what === 'all'; });
+    if (name === 'col') $('#ex-profile').value = '';
+    count();
+  }));
+  const saveProfiles = async (next) => {
+    const res = await api('PUT', 'api/export/profiles', next);
+    profiles = res.profiles;
+    opt.profiles = profiles;
+    $('#ex-profile').innerHTML = profiles.map((p) => `<option>${esc(p.name)}</option>`).join('') + '<option value="">(custom)</option>';
+  };
+  $('#ex-save').addEventListener('click', () => { $('#ex-save-row').hidden = false; $('#ex-name').value = $('#ex-profile').value; $('#ex-name').focus(); });
+  $('#ex-save-ok').addEventListener('click', async () => {
+    const name = $('#ex-name').value.trim();
+    if (!name) return;
+    const p = { name, columns: orderedColumns(profiles, $('#ex-profile').value, checked('col'), keys), sheets: checked('sheet') };
+    try {
+      await saveProfiles([...profiles.filter((x) => x.name.toLowerCase() !== name.toLowerCase()), p]);
+      $('#ex-profile').value = name;
+      $('#ex-save-row').hidden = true;
+      toast(`Profile “${name}” saved.`);
+    } catch (e) { toast(e.message, true); }
+  });
+  $('#ex-delete').addEventListener('click', async () => {
+    const name = $('#ex-profile').value;
+    if (!name) return;
+    try {
+      await saveProfiles(profiles.filter((x) => x.name !== name));
+      $('#ex-profile').value = '';
+      toast(`Profile “${name}” deleted.`);
+    } catch (e) { toast(e.message, true); }
+  });
+  count();
+}
+
+/** Columns in the profile's order, then the other ticked ones in the usual order. */
+function orderedColumns(profiles, profileName, ticked, keys) {
+  const p = profiles.find((x) => x.name === profileName);
+  const base = (p?.columns.length ? p.columns : keys).filter((k) => ticked.includes(k));
+  return [...base, ...keys.filter((k) => ticked.includes(k) && !base.includes(k))];
+}
+
+async function runExport(opt) {
+  const d = $('#dialog');
+  const checked = (name) => $$(`input[name="${name}"]`, d).filter((i) => i.checked).map((i) => i.value);
+  const keys = opt.columns.map((c) => c.key);
+  const profile = $('#ex-profile').value;
+  const cols = orderedColumns(opt.profiles, profile, checked('col'), keys);
+  const blks = checked('blk');
+  const sheets = checked('sheet');
+  const format = d.querySelector('input[name="ex-format"]:checked').value;
+  if (!cols.length) { toast('Choose at least one column.', true); return false; }
+  if (!blks.length) { toast('Choose at least one block.', true); return false; }
+  if (format === 'xlsx' && !sheets.length) { toast('Choose at least one sheet.', true); return false; }
+  exportChoice = { profile, columns: cols, blocks: blks.length === opt.blocks.length ? [] : blks, sheets, format };
+  try { localStorage.setItem('tracker-top-export', JSON.stringify(exportChoice)); } catch { /* not kept */ }
+  const spec = {
+    columns: cols.length === keys.length && cols.every((k, i) => k === keys[i]) ? [] : cols,
+    blocks: blks.length === opt.blocks.length ? [] : blks,
+    sheets: sheets.length === opt.sheets.length ? [] : sheets,
+  };
+  toast('Preparing the download…');
+  await downloadUrl(`api/export.${format}?spec=${encodeURIComponent(JSON.stringify(spec))}`);
+  return true;
+}
+
+$('#btn-custom').addEventListener('click', () => openExportDialog().catch((e) => toast(e.message, true)));
 
 // ---------------------------------------------------------------- settings
 
@@ -630,7 +977,10 @@ document.querySelectorAll('.browser-only').forEach((el) => { el.hidden = !BROWSE
 document.querySelectorAll('.desktop-only').forEach((el) => { el.hidden = BROWSER; });
 
 renderers.settings = async () => {
-  const [{ settings, defaults, watch_folder }, sum] = await Promise.all([api('GET', 'api/settings'), loadSummary(true)]);
+  const [{ settings, defaults, watch_folder }, sum, opts] = await Promise.all([api('GET', 'api/settings'), loadSummary(true), api('GET', 'api/export/options')]);
+  const profileSelect = $('[name="auto_export_profile"]');
+  const names = [...new Set([...opts.profiles.map((p) => p.name), settings.auto_export_profile])];
+  profileSelect.innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join('');
   $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, settings);
   $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, settings);
   const setFlood = (v) => {
@@ -639,10 +989,15 @@ renderers.settings = async () => {
     $('[name="epsg"]').value = v.epsg ?? '';
     $('[name="fixed_spans"]').checked = !!v.fixed_spans;
     $('[name="shift_warn_m"]').value = v.shift_warn_m;
+    $('[name="auto_export"]').checked = !!v.auto_export;
+    $('[name="auto_export_folder"]').value = v.auto_export_folder;
+    $('[name="auto_export_profile"]').value = v.auto_export_profile;
+    $('[name="auto_export_require_ok"]').checked = !!v.auto_export_require_ok;
   };
   setFlood(settings);
   $('#watch-folder').value = watch_folder || '';
   renderDatabaseCard(sum);
+  renderShareCard();
   $('#settings-defaults').onclick = () => {
     $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, defaults);
     $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, defaults);
@@ -670,6 +1025,10 @@ $('#settings-form').addEventListener('submit', async (e) => {
   settings.epsg = epsg ? Number(epsg) : null;
   settings.fixed_spans = $('[name="fixed_spans"]').checked;
   settings.shift_warn_m = Number($('[name="shift_warn_m"]').value);
+  settings.auto_export = $('[name="auto_export"]').checked;
+  settings.auto_export_folder = $('[name="auto_export_folder"]').value.trim();
+  settings.auto_export_profile = $('[name="auto_export_profile"]').value;
+  settings.auto_export_require_ok = $('[name="auto_export_require_ok"]').checked;
   const btn = e.submitter;
   if (btn) btn.disabled = true;
   try {
@@ -692,6 +1051,7 @@ async function poll() {
     const after = await api('GET', 'api/summary');
     const sig = (s) => s && `${s.summary.imports}/${s.summary.last_run?.run_id}`;
     if (before && sig(before) !== sig(after)) {
+      sync?.changed();
       cache.summary = after;
       cache.state = null;
       updateHeader();
@@ -731,6 +1091,24 @@ async function poll() {
   } catch (e) {
     toast(`Cannot reach the program: ${e.message}`, true);
   }
+  sync = createSync({
+    json: apiCall,
+    bytes: apiRaw,
+    changed: async (rep) => {
+      const who = rep.saved_by ? ` (saved by ${rep.saved_by}, ${utcText(rep.saved_at)})` : '';
+      if (rep.action === 'adopted') toast(rep.message && !rep.saved_by ? rep.message : `Updated from the shared database${who}.`);
+      else if (rep.action === 'merged') toast(`Merged with the shared database${who}: ${rep.imports_added} import${rep.imports_added === 1 ? '' : 's'} from this computer added${rep.voids_applied ? `, ${rep.voids_applied} voided` : ''}.`);
+      else if (rep.message) toast(rep.message);
+      await refresh();
+    },
+    exported: (text) => toast(text),
+  });
+  sync.onUpdate(() => {
+    renderSyncChip();
+    renderShareSummary();
+    if (current === 'settings') renderShareCard();
+  });
   await show(location.hash.slice(1) || 'overview', true);
+  sync.load().catch((e) => toast(`Shared database: ${e.message}`, true));
   setInterval(poll, 15000);
 })();

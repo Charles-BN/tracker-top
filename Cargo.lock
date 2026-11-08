@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "top-app"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "chrono",
@@ -959,18 +959,18 @@ dependencies = [
 
 [[package]]
 name = "top-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "top-core",
 ]
 
 [[package]]
 name = "top-core"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "top-db"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "calamine",
  "chrono",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "top-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "rust_xlsxwriter",

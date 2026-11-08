@@ -126,9 +126,34 @@ async fn api(State(st): State<AppState>, method: Method, uri: Uri, body: Bytes) 
     )
         .into_response();
     if let Some(name) = res.filename
-        && let Ok(v) = format!("attachment; filename=\"{name}\"").parse()
+        && let Ok(v) = content_disposition(&name).parse()
     {
         resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
     }
     resp
+}
+
+/// `attachment` header for a file name, any characters (RFC 6266 / 5987).
+fn content_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded: String = name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }

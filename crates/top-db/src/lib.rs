@@ -8,7 +8,8 @@
 //! - every imported file (master list, daily field surveys, LIDAR), with an
 //!   import report. Survey and LIDAR imports can be voided but not deleted;
 //! - the ground elevations read from those files (append-only);
-//! - every optimisation run and its results (append-only).
+//! - every optimisation run and its results (append-only);
+//! - the files sent to the installers, block by block (append-only).
 //!
 //! The elevation used for a pile is its latest field survey, or its LIDAR
 //! elevation when it has not been surveyed. A tracker is optimised once every
@@ -16,12 +17,14 @@
 //! changes.
 
 pub mod api;
+pub mod blocks;
 pub mod dates;
 pub mod export;
 pub mod gpkg;
 pub mod report;
 pub mod settings;
 pub mod store;
+pub mod sync;
 pub mod table;
 
 pub use report::{Finding, ImportReport, Level};

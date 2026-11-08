@@ -22,6 +22,8 @@ pub const ASSETS: &[Asset] = &[
     asset!("app.js", "text/javascript; charset=utf-8"),
     asset!("view3d.js", "text/javascript; charset=utf-8"),
     asset!("profile.js", "text/javascript; charset=utf-8"),
+    asset!("sync.js", "text/javascript; charset=utf-8"),
+    asset!("config.js", "text/javascript; charset=utf-8"),
     asset!(
         "vendor/three.module.min.js",
         "text/javascript; charset=utf-8"

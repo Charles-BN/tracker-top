@@ -57,6 +57,16 @@ pub struct Settings {
     pub fixed_spans: bool,
     /// Flag piles whose set-out position moves more than this from design (m).
     pub shift_warn_m: f64,
+
+    /// Send a block's file to the installers' folder once every pile in it is
+    /// surveyed and every tracker has a current result (needs a shared folder).
+    pub auto_export: bool,
+    /// Folder for those files, inside the shared folder ("/" for subfolders).
+    pub auto_export_folder: String,
+    /// Export profile (columns) used for those files.
+    pub auto_export_profile: String,
+    /// Wait until every tracker of the block is Compliant or Graded.
+    pub auto_export_require_ok: bool,
 }
 
 impl Default for Settings {
@@ -78,6 +88,10 @@ impl Default for Settings {
             epsg: Some(7856),
             fixed_spans: true,
             shift_warn_m: 0.10,
+            auto_export: true,
+            auto_export_folder: "For installers".into(),
+            auto_export_profile: "Installers".into(),
+            auto_export_require_ok: true,
         }
     }
 }
@@ -152,6 +166,19 @@ impl Settings {
         if self.epsg.is_some_and(|c| !(1024..=999_999).contains(&c)) {
             return Err(
                 "the EPSG code must be a number such as 7856 (GDA2020 / MGA zone 56)".into(),
+            );
+        }
+        let folder = self.auto_export_folder.trim();
+        if folder.is_empty()
+            || folder
+                .split('/')
+                .any(|part| part.trim().is_empty() || part.trim() == "." || part.trim() == "..")
+            || folder.contains(['\\', ':', '*', '?', '"', '<', '>', '|'])
+        {
+            return Err(
+                "the installers' folder must be a folder name such as \"For installers\" \
+                 (use / for a subfolder)"
+                    .into(),
             );
         }
         if self.offset_warn_m > self.offset_reject_m {
