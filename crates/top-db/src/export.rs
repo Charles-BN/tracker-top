@@ -20,7 +20,7 @@ const fn col(key: &'static str, header: &'static str, group: &'static str) -> Co
 }
 
 /// Every column of the Piles sheet, in the order of `pile_cells`.
-pub const COLUMNS: [Column; 30] = [
+pub const COLUMNS: [Column; 33] = [
     col("pile_id", "Pile ID", "Pile"),
     col("block", "Block", "Pile"),
     col("section", "Section", "Pile"),
@@ -36,6 +36,9 @@ pub const COLUMNS: [Column; 30] = [
     col("ground_z", "Ground Z", "Ground"),
     col("z_source", "Z Source", "Ground"),
     col("z_date", "Z Date", "Ground"),
+    col("survey_z", "Survey Z", "Ground"),
+    col("lidar_z", "LIDAR Z", "Ground"),
+    col("survey_minus_lidar", "Survey - LIDAR (m)", "Ground"),
     col("survey_offset", "Survey Offset (m)", "Ground"),
     col("surveys", "Surveys", "Ground"),
     col("flood_value", "Flood Value (m)", "Flood"),
@@ -179,7 +182,9 @@ fn source(k: Option<Kind>) -> String {
     }
 }
 
-fn pile_cells(p: &PileState, t: &TrackerState) -> Vec<Cell> {
+/// One row of the Piles sheet. `dc`: decimals of calculated values (2 when
+/// they are rounded to the centimetre); measured values keep 3 (millimetre).
+fn pile_cells(p: &PileState, t: &TrackerState, dc: usize) -> Vec<Cell> {
     let r = p.result.as_ref();
     let mut comment = Vec::new();
     if r.is_some_and(|r| r.outlier) {
@@ -204,26 +209,29 @@ fn pile_cells(p: &PileState, t: &TrackerState) -> Vec<Cell> {
         Cell::Text(p.color.clone()),
         Cell::Num(p.easting, 4),
         Cell::Num(p.northing, 4),
-        opt(r.and_then(|r| r.set_easting), 4),
-        opt(r.and_then(|r| r.set_northing), 4),
-        opt(r.and_then(|r| r.shift), 4),
-        opt(p.z, 4),
+        opt(r.and_then(|r| r.set_easting), dc),
+        opt(r.and_then(|r| r.set_northing), dc),
+        opt(r.and_then(|r| r.shift), dc),
+        opt(p.z, 3),
         Cell::Text(source(p.z_source)),
         Cell::Text(p.z_date.clone().unwrap_or_default()),
+        opt(p.z_survey, 3),
+        opt(p.z_lidar, 3),
+        opt(p.z_survey.zip(p.z_lidar).map(|(s, l)| s - l), dc),
         opt(p.offset_m, 3),
         Cell::Num(p.n_surveys as f64, 0),
         opt(p.flood, 3),
-        opt(p.flood_level, 4),
-        opt(p.min_top, 4),
+        opt(p.flood_level, dc),
+        opt(p.min_top, dc),
         Cell::Text(match r {
             Some(r) if r.min_top_active => "Yes".into(),
             Some(_) if p.min_top.is_some() => "No".into(),
             _ => String::new(),
         }),
-        opt(r.map(|r| r.new_ground), 4),
-        opt(r.map(|r| r.cut_fill), 4),
-        opt(r.map(|r| r.top), 4),
-        opt(r.map(|r| r.reveal), 4),
+        opt(r.map(|r| r.new_ground), dc),
+        opt(r.map(|r| r.cut_fill), dc),
+        opt(r.map(|r| r.top), dc),
+        opt(r.map(|r| r.reveal), dc),
         opt(r.map(|r| r.angle_diff_deg), 4),
         Cell::Text(t.status.clone()),
         Cell::Text(if t.run_id.is_none() {
@@ -243,6 +251,7 @@ fn pile_rows<'a>(
     state: &'a State,
     spec: &'a ExportSpec,
     cols: &'a [usize],
+    dc: usize,
 ) -> impl Iterator<Item = Vec<Cell>> + 'a {
     state
         .trackers
@@ -253,7 +262,7 @@ fn pile_rows<'a>(
                 .iter()
                 .map(move |p| {
                     let mut all: Vec<Option<Cell>> =
-                        pile_cells(p, t).into_iter().map(Some).collect();
+                        pile_cells(p, t, dc).into_iter().map(Some).collect();
                     cols.iter()
                         .map(|&i| all[i].take().unwrap_or(Cell::Empty))
                         .collect()
@@ -274,16 +283,20 @@ fn csv_quote(s: &str) -> String {
 }
 
 /// One row per pile, comma-separated, `.` decimal mark.
-pub fn piles_csv(state: &State) -> String {
-    piles_csv_with(state, &ExportSpec::default()).expect("every column exists")
+pub fn piles_csv(state: &State, settings: &Settings) -> String {
+    piles_csv_with(state, &ExportSpec::default(), settings).expect("every column exists")
 }
 
 /// The CSV with the columns and blocks of `spec`.
-pub fn piles_csv_with(state: &State, spec: &ExportSpec) -> Result<String, String> {
+pub fn piles_csv_with(
+    state: &State,
+    spec: &ExportSpec,
+    settings: &Settings,
+) -> Result<String, String> {
     let cols = spec.column_indices()?;
     let mut out = headers(&cols).join(",");
     out.push('\n');
-    for row in pile_rows(state, spec, &cols) {
+    for row in pile_rows(state, spec, &cols, settings.decimals()) {
         let line: Vec<String> = row
             .iter()
             .map(|c| match c {
@@ -351,7 +364,7 @@ fn write_sheet(
     Ok(())
 }
 
-fn tracker_cells(t: &TrackerState) -> Vec<Cell> {
+fn tracker_cells(t: &TrackerState, dc: usize) -> Vec<Cell> {
     vec![
         Cell::Text(t.tracker.clone()),
         Cell::Text(t.block.clone()),
@@ -370,9 +383,9 @@ fn tracker_cells(t: &TrackerState) -> Vec<Cell> {
             "Yes".into()
         }),
         opt(t.max_angle_deg, 3),
-        opt(t.max_cut_fill, 3),
+        opt(t.max_cut_fill, dc),
         Cell::Text(t.anchor_pile.clone().unwrap_or_default()),
-        opt(t.max_shift, 4),
+        opt(t.max_shift, dc),
         opt(t.span_error.map(|e| e * 1000.0), 3),
         Cell::Num(t.n_flood as f64, 0),
         Cell::Num(t.n_flood_raised as f64, 0),
@@ -426,7 +439,12 @@ pub fn workbook_with(
 
         if spec.sheet("piles") {
             let ws = wb.add_worksheet().set_name("Piles")?;
-            write_sheet(ws, &f, &headers(&cols), pile_rows(state, spec, &cols))?;
+            write_sheet(
+                ws,
+                &f,
+                &headers(&cols),
+                pile_rows(state, spec, &cols, settings.decimals()),
+            )?;
         }
 
         if !about.is_empty() {
@@ -469,7 +487,7 @@ pub fn workbook_with(
                     .trackers
                     .iter()
                     .filter(|t| spec.block(&t.block))
-                    .map(tracker_cells),
+                    .map(|t| tracker_cells(t, settings.decimals())),
             )?;
         }
 

@@ -141,6 +141,8 @@ fn state_columns(store: &Store) -> Result<Value, String> {
         "z": col(&|p| opt(p.z, 4)),
         "zsrc": col(&|p| json!(p.z_source.map(Kind::as_str))),
         "zdate": col(&|p| json!(p.z_date)),
+        "zs": col(&|p| opt(p.z_survey, 3)),
+        "zl": col(&|p| opt(p.z_lidar, 3)),
         "offset": col(&|p| opt(p.offset_m, 3)),
         "nsurv": col(&|p| json!(p.n_surveys)),
         "run": col(&|p| json!(p.result.as_ref().map(|r| r.run_id))),
@@ -346,7 +348,12 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
         }
         ("GET", "export.csv") => {
             let spec = export_spec(store, req.query)?.unwrap_or_default();
-            let text = export::piles_csv_with(&store.state().map_err(bad)?, &spec).map_err(bad)?;
+            let text = export::piles_csv_with(
+                &store.state().map_err(bad)?,
+                &spec,
+                &store.settings().map_err(bad)?,
+            )
+            .map_err(bad)?;
             download(
                 format!("tracker-top_piles{}_{}.csv", blocks_label(&spec), stamp()),
                 "text/csv; charset=utf-8",
@@ -356,7 +363,7 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
         ("GET", "export/options") => {
             let summary = store.summary().map_err(bad)?;
             ok(json!({
-                "columns": COLUMNS,
+                "columns": &COLUMNS[..],
                 "sheets": export::SHEETS,
                 "profiles": store.export_profiles().map_err(bad)?,
                 "blocks": summary.blocks,

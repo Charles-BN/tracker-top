@@ -122,7 +122,7 @@ flowchart LR
 | `Cargo.lock` | Exact versions of every external library (generated; commit it). |
 | `crates/top-core/src/model.rs` | `Pile`, `Tracker`, grouping piles into trackers. |
 | `crates/top-core/src/params.rs` | Design parameters (reveal window, angle limit…) and their defaults. |
-| `crates/top-core/src/optimize.rs` | Builds the optimisation problem of a tracker, solves it, checks it, gives a status. |
+| `crates/top-core/src/optimize.rs` | Builds the optimisation problem of a tracker, solves it, rounds it to the centimetre, checks it, gives a status. |
 | `crates/top-core/src/qp.rs` | The quadratic-programming solver (ADMM). |
 | `crates/top-core/src/setout.rs` | New pile positions that keep the torque-tube span lengths. |
 | `crates/top-core/src/csv.rs` | CSV reading/writing for the command-line tool. |
@@ -142,7 +142,7 @@ flowchart LR
 | `crates/top-app/src/api.rs` | HTTP routes of the desktop program. |
 | `crates/top-app/src/watch.rs` | The watch folder (automatic import of new survey files). |
 | `crates/top-app/src/assets.rs` | The web page's files, built into the executable. |
-| `crates/top-app/web/` | The web page: `index.html`, `style.css`, `app.js` (the interface), `sync.js` (shared database), `view3d.js` (3D view), `profile.js` (profile chart), `config.js`, `vendor/` (three.js, delaunator). |
+| `crates/top-app/web/` | The web page: `index.html`, `style.css`, `app.js` (the interface), `sync.js` (shared database), `map2d.js` (2D map), `view3d.js` (3D view), `profile.js` (profile chart), `config.js`, `vendor/` (three.js, delaunator). |
 | `crates/top-web/src/lib.rs` | The browser engine exposed to JavaScript. |
 | `crates/top-web/www/` | `worker.js` (runs the engine, stores the database in the browser) and `browser.js` (bridge between the page and the worker). |
 | `scripts/build-web.sh` | Builds the browser version into `target/web-dist/`. |
@@ -492,6 +492,7 @@ from the first one, adding up the straight-line distance between consecutive pil
 | `grading_threshold` | 0.005 m | more cut/fill than this makes a tracker "Graded" |
 | `lidar_sigma_alpha` | 2.0 | flags a ground value more than 2 standard deviations from its tracker's mean |
 | `fixed_spans` | false here (true in the application's settings) | compute set-out positions (4.7) |
+| `round_step` | 0 here (0.01 in the application's settings) | round tops, cut/fill and set-out positions to this step (4.6) |
 
 `validate()` refuses impossible values (e.g. `delta_min ≥ delta_max`).
 
@@ -584,12 +585,26 @@ flowchart TD
   B -->|no| P2["status InvalidInput"]
   B -->|yes| C["build_qp → solver.solve"]
   C --> D["tops y and cut/fill c;<br/>true angles recomputed with atan2"]
-  D --> E{"solved, and angles, reveal,<br/>flood minimum, cut/fill cap<br/>all within limits?"}
+  D --> R["round to the centimetre<br/>(dynamic programme; stricter re-solve if needed)"]
+  R --> E{"solved, and angles, reveal,<br/>flood minimum, cut/fill cap<br/>all within limits?"}
   E -->|no| N["NonCompliant"]
   E -->|yes| F{"largest |cut/fill| ><br/>grading threshold?"}
   F -->|yes| G["Graded"]
   F -->|no| K["Compliant"]
 ```
+
+**Rounding to the centimetre** (`round_step`, `round_profile`). Rounding each top on its own
+could break the angle limit: moving two neighbouring tops by 5 mm in opposite directions changes
+the angle by up to about 0.14° on an 8 m span. So, after the solve, each pile may take one of the
+six centimetre values around its exact top; the angle at a pile depends on its two neighbours,
+so a *dynamic programme* walks along the tracker keeping, for every pair of consecutive choices,
+the cheapest way to get there with every angle within the limit, the reveal in its window (with
+whole-centimetre cut/fill where needed), the flood minimum and the cut/fill cap respected. If no
+combination fits, or the only ones need cut/fill the exact solution did not, the tracker is
+solved again with slightly stricter limits (`TIGHTEN`: the angle limit 0.02°, 0.06° then 0.15°
+lower) and rounded again. The checks below then run on the rounded values. With set-out, the
+positions are rounded before the tracker is optimised at them, so the tops are checked at exactly
+the positions that will be set out.
 
 The result, `TrackerResult`, holds the status and, for each pile, a `PileResult`: top, cut/fill,
 new ground, final reveal, angle change, outlier flag, whether the top sits on its flood minimum,
@@ -1160,6 +1175,7 @@ The interface is plain JavaScript modules, with no framework, in `crates/top-app
 | `style.css` | colours (light and dark themes), layout |
 | `app.js` | everything else: API calls, the tabs, import, results, history, settings, custom export, the shared-database cards |
 | `sync.js` | the shared database: moving the file to and from the folder or Google Drive |
+| `map2d.js` | the 2D map: every pile drawn on a canvas, one batch per colour; pan, zoom, pick with a 10 m grid index |
 | `view3d.js` | the 3D view (three.js): pile markers, tracker lines, a ground surface triangulated with delaunator |
 | `profile.js` | the profile chart of a tracker (SVG) |
 | `config.js` | settings of the installation (the Google client ID) |
@@ -1219,7 +1235,7 @@ cargo test -p top-db sync       # only the tests of top-db whose name contains "
 | Where | What is tested |
 |---|---|
 | `top-core/src/qp.rs` | the solver on problems with a known answer |
-| `top-core/src/optimize.rs` | flat, sloped, dipped terrain; random trackers; parallel = serial; flood minimum; set-out |
+| `top-core/src/optimize.rs` | flat, sloped, dipped terrain; random trackers; parallel = serial; flood minimum; set-out; centimetre rounding within every limit |
 | `top-core/src/setout.rs` | motor pile detection, span lengths kept, angles at the new positions |
 | `top-db/src/table.rs` | separators, decimal commas, headerless files, Latin-1, quotes, header spellings |
 | `top-db/src/store.rs` | imports of every kind, immutability, duplicates, matching, voiding, incremental runs, settings, flood, set-out, upgrades of old databases, exports |
@@ -1285,7 +1301,7 @@ The version number is in the workspace `Cargo.toml` (`version = "0.6.0"`); the p
 
 **…add a column to the exports?**
 In `crates/top-db/src/export.rs`, add a `col("key", "Header", "Group")` line to `COLUMNS`
-(and change the array length `[Column; 30]`), and the matching cell in `pile_cells`, at the same
+(and change the array length `[Column; 33]`), and the matching cell in `pile_cells`, at the same
 position. If the value is new, add it to `PileState` in `store.rs` and fill it in `state()`. The
 custom export dialog and profiles pick it up automatically. Run `cargo test`: the test
 `custom_csv_has_the_chosen_columns_and_blocks` checks the column count.

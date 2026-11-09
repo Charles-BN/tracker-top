@@ -136,6 +136,11 @@ pub struct PileState {
     pub z_source: Option<Kind>,
     pub z_import_id: Option<i64>,
     pub z_date: Option<String>,
+    /// Latest field-survey ground (and its date) and latest LIDAR / design
+    /// ground, whichever is in use.
+    pub z_survey: Option<f64>,
+    pub z_survey_date: Option<String>,
+    pub z_lidar: Option<f64>,
     /// Surveyed position minus design position, horizontal distance (m).
     pub offset_m: Option<f64>,
     /// How many field surveys measured this pile (voided ones excluded).
@@ -235,6 +240,13 @@ pub struct Summary {
     pub last_survey: Option<ImportRow>,
     pub last_run: Option<RunSummary>,
     pub blocks: Vec<BlockSummary>,
+}
+
+/// Latest ground of a pile by source.
+#[derive(Default)]
+struct GroundKinds {
+    survey: Option<(f64, String)>,
+    lidar: Option<f64>,
 }
 
 /// Latest elevation of a pile.
@@ -629,6 +641,42 @@ impl Store {
         for row in rows {
             let (id, e) = row.map_err(db)?;
             out.entry(id).or_insert(e);
+        }
+        Ok(out)
+    }
+
+    /// Latest survey ground (with its date) and latest LIDAR ground per pile.
+    fn ground_by_kind(&self) -> Result<HashMap<String, GroundKinds>> {
+        let mut st = self
+            .conn
+            .prepare(
+                "SELECT e.pile_id, e.z, i.kind, COALESCE(i.survey_date, substr(i.imported_at, 1, 10))
+                 FROM elevations e JOIN imports i ON i.import_id = e.import_id
+                 WHERE i.voided_at IS NULL
+                 ORDER BY e.pile_id,
+                          COALESCE(i.survey_date, substr(i.imported_at, 1, 10)) DESC,
+                          e.import_id DESC",
+            )
+            .map_err(db)?;
+        let mut out: HashMap<String, GroundKinds> = HashMap::new();
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(db)?;
+        for row in rows {
+            let (id, z, kind, date) = row.map_err(db)?;
+            let g = out.entry(id).or_default();
+            if kind == "survey" {
+                g.survey.get_or_insert((z, date));
+            } else {
+                g.lidar.get_or_insert(z);
+            }
         }
         Ok(out)
     }
@@ -1909,6 +1957,7 @@ impl Store {
         let runs = self.latest_runs()?;
         let mut results = self.latest_pile_results(&masters, &runs)?;
         let counts = self.survey_counts()?;
+        let kinds = self.ground_by_kind()?;
 
         let mut piles = Vec::with_capacity(masters.len());
         let mut trackers = Vec::new();
@@ -1991,6 +2040,13 @@ impl Store {
                     z_source: e.map(|e| e.kind),
                     z_import_id: e.map(|e| e.import_id),
                     z_date: e.map(|e| e.date.clone()),
+                    z_survey: kinds
+                        .get(&p.pile_id)
+                        .and_then(|g| g.survey.as_ref().map(|s| s.0)),
+                    z_survey_date: kinds
+                        .get(&p.pile_id)
+                        .and_then(|g| g.survey.as_ref().map(|s| s.1.clone())),
+                    z_lidar: kinds.get(&p.pile_id).and_then(|g| g.lidar),
                     offset_m: e.and_then(|e| e.offset_m),
                     n_surveys: counts.get(&p.pile_id).copied().unwrap_or(0),
                     flood: flood_value,
@@ -2755,7 +2811,7 @@ mod tests {
         let mut s = loaded();
         s.optimize(false, "test", 2).unwrap();
         let st = s.state().unwrap();
-        let csv = export::piles_csv(&st);
+        let csv = export::piles_csv(&st, &s.settings().unwrap());
         assert_eq!(csv.lines().count(), 790);
         assert!(csv.starts_with("Pile ID,Block,Section,Tracker"));
         let xlsx = export::workbook(&st, &s.imports().unwrap(), &s.settings().unwrap()).unwrap();
@@ -2817,8 +2873,10 @@ mod tests {
         let mut max_shift = 0.0f64;
         for t in &st.trackers {
             assert_eq!(t.anchor_motor, Some(true), "{}", t.tracker);
+            // Set-out positions are rounded to the centimetre: each span's
+            // length is then right to about 1 cm.
             assert!(
-                t.span_error.unwrap() < 1e-6,
+                t.span_error.unwrap() <= 0.0101,
                 "{}: {:?}",
                 t.tracker,
                 t.span_error
@@ -2838,9 +2896,10 @@ mod tests {
             .find(|p| p.pile_id == "P01.02.01.01")
             .unwrap();
         let r = p.result.as_ref().unwrap();
-        assert!(((r.set_northing.unwrap() - p.northing) - r.shift.unwrap()).abs() < 1e-9);
-        assert_eq!(r.set_easting, Some(p.easting));
-        let csv = export::piles_csv(&st);
+        // Set-out positions and shifts are rounded to the centimetre.
+        assert!(((r.set_northing.unwrap() - p.northing) - r.shift.unwrap()).abs() < 0.0101);
+        assert!((r.set_easting.unwrap() - p.easting).abs() <= 0.005 + 1e-9);
+        let csv = export::piles_csv(&st, &s.settings().unwrap());
         assert!(
             csv.lines()
                 .next()
@@ -2915,5 +2974,48 @@ mod tests {
         assert_eq!(sum.tracker_status.values().sum::<usize>(), 62);
         assert_eq!(sum.blocks.len(), 1);
         assert_eq!(sum.imports, 2);
+    }
+
+    #[test]
+    fn survey_and_lidar_ground_are_both_kept() {
+        let mut s = loaded();
+        let st = s.state().unwrap();
+        let p0 = st.piles[0].clone();
+        let lidar = p0.z_lidar.unwrap();
+        assert_eq!((p0.z, p0.z_survey), (Some(lidar), None));
+        let survey = format!(
+            "{},{},{},{:.3}\n",
+            p0.pile_id,
+            p0.easting,
+            p0.northing,
+            lidar + 0.123
+        );
+        let rep = s
+            .import_file(
+                Kind::Survey,
+                "s.csv",
+                survey.as_bytes(),
+                Some("2026-11-09"),
+                "t",
+            )
+            .unwrap();
+        assert!(rep.accepted, "{}", findings(&rep));
+        let st = s.state().unwrap();
+        let p = st.piles.iter().find(|p| p.pile_id == p0.pile_id).unwrap();
+        assert_eq!(p.z_lidar, Some(lidar), "LIDAR kept");
+        assert!((p.z_survey.unwrap() - (lidar + 0.123)).abs() < 0.0006);
+        assert_eq!(p.z_survey_date.as_deref(), Some("2026-11-09"));
+        assert_eq!(p.z, p.z_survey, "the survey is in use");
+        let csv = export::piles_csv(&st, &s.settings().unwrap());
+        let head: Vec<&str> = csv.lines().next().unwrap().split(',').collect();
+        let col = |name: &str| head.iter().position(|h| *h == name).unwrap();
+        let row: Vec<&str> = csv
+            .lines()
+            .find(|l| l.starts_with(&format!("{},", p0.pile_id)))
+            .unwrap()
+            .split(',')
+            .collect();
+        assert_eq!(row[col("Survey - LIDAR (m)")], "0.12");
+        assert_eq!(row[col("LIDAR Z")], format!("{lidar:.3}"));
     }
 }

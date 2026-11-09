@@ -32,6 +32,8 @@ const fmt = (v, d = 3) => {
  * settings: { reveal_nominal, delta_min, delta_max, max_angle_deg }
  */
 export function renderProfile(container, rows, settings) {
+  // Calculated values: 2 decimals when rounded to the centimetre.
+  const dc = (settings.round_step ?? 0) >= 0.0095 ? 2 : 3;
   container.innerHTML = '';
   container.classList.add('profile');
   const hasResult = rows.some((r) => r.top != null);
@@ -137,10 +139,11 @@ export function renderProfile(container, rows, settings) {
     const src = best.zsrc === 'survey' ? 'survey' : best.zsrc === 'lidar' ? 'LIDAR' : '';
     tip.innerHTML = `<b>${best.id}</b>
       <div class="row"><span>Ground${src ? ` (${src})` : ''}</span><span class="num">${fmt(best.z)}</span></div>
-      ${hasCut ? `<div class="row"><span>Cut / fill</span><span class="num">${fmt(best.cf)}</span></div>` : ''}
-      ${best.flvl != null ? `<div class="row"><span>Flood water level</span><span class="num">${fmt(best.flvl)}</span></div><div class="row"><span>Lowest allowed top</span><span class="num">${fmt(best.mintop)}</span></div>` : ''}
-      <div class="row"><span>Top of pile${best.mta ? ' (raised for flood)' : ''}</span><span class="num">${fmt(best.top)}</span></div>
-      <div class="row"><span>Reveal</span><span class="num">${fmt(best.rev)}</span></div>
+      ${best.zsrc === 'survey' && best.zl != null ? `<div class="row"><span>LIDAR ground</span><span class="num">${fmt(best.zl)}</span></div>` : ''}
+      ${hasCut ? `<div class="row"><span>Cut / fill</span><span class="num">${fmt(best.cf, dc)}</span></div>` : ''}
+      ${best.flvl != null ? `<div class="row"><span>Flood water level</span><span class="num">${fmt(best.flvl, dc)}</span></div><div class="row"><span>Lowest allowed top</span><span class="num">${fmt(best.mintop, dc)}</span></div>` : ''}
+      <div class="row"><span>Top of pile${best.mta ? ' (raised for flood)' : ''}</span><span class="num">${fmt(best.top, dc)}</span></div>
+      <div class="row"><span>Reveal</span><span class="num">${fmt(best.rev, dc)}</span></div>
       <div class="row"><span>Angle change</span><span class="num">${fmt(best.ang, 3)}°</span></div>
       <div class="row"><span>Distance</span><span class="num">${best.s.toFixed(2)} m</span></div>`;
     tip.hidden = false;
