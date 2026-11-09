@@ -24,6 +24,10 @@ pub struct Params {
     /// Keep each torque-tube span at its design length: piles are set out along
     /// the tracker from the motor pile (see [`crate::setout`]).
     pub fixed_spans: bool,
+    /// Round tops, cut/fill and set-out positions to this step (m), e.g. 0.01
+    /// for the centimetre; 0 keeps the exact values. The limits are checked on
+    /// the rounded values (see [`crate::optimize`]).
+    pub round_step: f64,
 }
 
 impl Default for Params {
@@ -39,6 +43,7 @@ impl Default for Params {
             grading_threshold: 0.005,
             lidar_sigma_alpha: 2.0,
             fixed_spans: false,
+            round_step: 0.0,
         }
     }
 }
@@ -64,6 +69,9 @@ impl Params {
         }
         if !(self.max_cut_fill >= 0.0) {
             return Err("max_cut_fill must be >= 0".into());
+        }
+        if !(self.round_step >= 0.0 && self.round_step <= 0.05) {
+            return Err("round_step must be between 0 and 0.05 m".into());
         }
         Ok(())
     }

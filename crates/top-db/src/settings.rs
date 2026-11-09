@@ -57,6 +57,10 @@ pub struct Settings {
     pub fixed_spans: bool,
     /// Flag piles whose set-out position moves more than this from design (m).
     pub shift_warn_m: f64,
+    /// Calculated values (tops, cut/fill, set-out positions) are rounded to
+    /// this step (m): 0.01 = the centimetre; 0 keeps them exact. The limits
+    /// are checked on the rounded values.
+    pub round_step: f64,
 
     /// Send a block's file to the installers' folder once every pile in it is
     /// surveyed and every tracker has a current result (needs a shared folder).
@@ -88,6 +92,7 @@ impl Default for Settings {
             epsg: Some(7856),
             fixed_spans: true,
             shift_warn_m: 0.10,
+            round_step: 0.01,
             auto_export: true,
             auto_export_folder: "For installers".into(),
             auto_export_profile: "Installers".into(),
@@ -97,6 +102,18 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Decimals to show calculated values with: 2 when rounded to the
+    /// centimetre, 3 to the millimetre, else 4.
+    pub fn decimals(&self) -> usize {
+        if self.round_step >= 0.0095 {
+            2
+        } else if self.round_step >= 0.00095 {
+            3
+        } else {
+            4
+        }
+    }
+
     pub fn params(&self) -> Params {
         Params {
             reveal_nominal: self.reveal_nominal,
@@ -106,6 +123,7 @@ impl Settings {
             max_cut_fill: self.max_cut_fill,
             grading_threshold: self.grading_threshold,
             fixed_spans: self.fixed_spans,
+            round_step: self.round_step,
             ..Params::default()
         }
     }
@@ -123,8 +141,9 @@ impl Settings {
             "flood_mode": self.flood_mode,
             "flood_clearance_m": self.flood_clearance_m,
             "fixed_spans": self.fixed_spans,
+            "round_step": self.round_step,
             // Bumped when the calculation itself changes, so results are redone.
-            "method": 2,
+            "method": 3,
         })
         .to_string()
     }
@@ -159,6 +178,9 @@ impl Settings {
             if !(v.is_finite() && v >= 0.0) {
                 return Err(format!("{name} must be a number >= 0"));
             }
+        }
+        if !(self.round_step.is_finite() && (0.0..=0.05).contains(&self.round_step)) {
+            return Err("round_step must be between 0 and 0.05 m (0.01 = centimetre)".into());
         }
         if !self.flood_clearance_m.is_finite() || self.flood_clearance_m.abs() > 20.0 {
             return Err("flood_clearance_m must be a number between -20 and 20".into());

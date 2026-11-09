@@ -18,6 +18,7 @@
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
     <button role="tab" data-tab="import" aria-selected="false">Import</button>
     <button role="tab" data-tab="results" aria-selected="false">Results</button>
+    <button role="tab" data-tab="map" aria-selected="false">Map</button>
     <button role="tab" data-tab="view3d" aria-selected="false">3D view</button>
     <button role="tab" data-tab="history" aria-selected="false">History</button>
     <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
@@ -77,6 +78,39 @@
     <div class="results">
       <div class="table-wrap"><table id="tracker-table"></table></div>
       <div class="card detail" id="tracker-detail"><p class="muted">Select a tracker to see its profile and piles.</p></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-map" role="tabpanel">
+    <aside class="v3-side">
+      <h3 style="margin-bottom:14px">Map</h3>
+      <label class="field"><span>Colour piles by</span>
+        <select id="m2-mode">
+          <option value="coverage">Survey coverage</option>
+          <option value="date">Survey date</option>
+          <option value="status">Tracker status</option>
+          <option value="reveal">Reveal</option>
+          <option value="diff">Survey − LIDAR</option>
+          <option value="installers">Installers' file (by block)</option>
+        </select>
+      </label>
+      <label class="field"><span>Block</span><select id="m2-block"></select></label>
+      <label class="field"><span>Go to tracker or pile</span>
+        <input type="search" id="m2-find" list="v3-trackers" placeholder="Tracker or pile ID">
+      </label>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="m2-lines" checked> Tracker lines</label>
+      <label class="check" style="margin-bottom:14px"><input type="checkbox" id="m2-labels" checked> Block labels</label>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button class="btn" id="m2-in" aria-label="Zoom in" style="flex:1">+</button>
+        <button class="btn" id="m2-out" aria-label="Zoom out" style="flex:1">−</button>
+        <button class="btn" id="m2-fit" style="flex:2">Fit</button>
+      </div>
+      <button class="btn" id="m2-save" style="width:100%">Save as image</button>
+      <p class="muted" style="margin-top:14px;font-size:12.5px">Piles at their design positions, north up. Drag to move, scroll or pinch to zoom, double-click to zoom in. Click a pile for its details; click a legend line to hide or show it.</p>
+    </aside>
+    <div class="v3-main" id="m2-main">
+      <div class="v3-legend" id="m2-legend"></div>
+      <div class="v3-info" id="m2-info" hidden></div>
     </div>
   </section>
 

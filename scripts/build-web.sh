@@ -24,6 +24,27 @@ cp crates/top-web/www/*.js "$OUT/"
 # Switch the page to the in-browser engine.
 sed -i 's#<script type="module" src="app.js"></script>#<script>window.TRACKER_TOP_BROWSER = true;</script>\n<script type="module" src="app.js"></script>#' "$OUT/index.html"
 grep -q TRACKER_TOP_BROWSER "$OUT/index.html"
+
+# Version stamp on every file address, so that browsers and company proxies
+# never mix the files of two versions (they may keep old copies for a while),
+# and version.json, which the page checks to offer a reload after an update.
+BUILD="$(git rev-parse --short=10 HEAD 2>/dev/null || date +%s)-$(date -u +%Y%m%d%H%M%S)"
+sed -i -e "s#href=\"style.css\"#href=\"style.css?v=$BUILD\"#" \
+       -e "s#src=\"config.js\"#src=\"config.js?v=$BUILD\"#" \
+       -e "s#src=\"app.js\"#src=\"app.js?v=$BUILD\"#" \
+       -e "s#window.TRACKER_TOP_BROWSER = true;#window.TRACKER_TOP_BROWSER = true; window.TRACKER_TOP_BUILD = '$BUILD';#" \
+       "$OUT/index.html"
+sed -i -e "s#'\./profile.js'#'./profile.js?v=$BUILD'#" -e "s#'\./sync.js'#'./sync.js?v=$BUILD'#" \
+       -e "s#'\./view3d.js'#'./view3d.js?v=$BUILD'#" -e "s#'\./browser.js'#'./browser.js?v=$BUILD'#" \
+       -e "s#'\./map2d.js'#'./map2d.js?v=$BUILD'#" "$OUT/app.js"
+sed -i "s#'\./worker.js'#'./worker.js?v=$BUILD'#" "$OUT/browser.js"
+sed -i "s#'\./pkg/top_web.js'#'./pkg/top_web.js?v=$BUILD'#" "$OUT/worker.js"
+sed -i "s#'top_web_bg.wasm'#'top_web_bg.wasm?v=$BUILD'#" "$OUT/pkg/top_web.js"
+for f in "$OUT/index.html" "$OUT/app.js" "$OUT/browser.js" "$OUT/worker.js" "$OUT/pkg/top_web.js"; do
+  grep -q "v=$BUILD" "$f" || { echo "version stamp missing in $f" >&2; exit 1; }
+done
+[ "$(grep -c "v=$BUILD" "$OUT/app.js")" -eq 5 ] || { echo "app.js: not every module stamped" >&2; exit 1; }
+printf '{"build":"%s"}\n' "$BUILD" > "$OUT/version.json"
 # Stop GitHub Pages from ignoring files that start with an underscore.
 touch "$OUT/.nojekyll"
 echo "Browser version built in $OUT ($(du -sh "$OUT" | cut -f1))"

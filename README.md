@@ -84,8 +84,22 @@ Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the 
    or **ArcGIS** (GeoPackage, see *ArcGIS* below).
 
 Tabs: *Overview* (counts, **average reveal**, progress by block with each block's average reveal
-and installers' file), *Import*, *Results*, *3D view*, *History*, *Settings* (reveal window, angle
-limit, survey-matching tolerances, installers' files, watch folder, database, shared database).
+and installers' file), *Import*, *Results*, **Map** (2D plan, see below), *3D view*, *History*,
+*Settings* (reveal window, angle limit, rounding, survey-matching tolerances, installers' files,
+watch folder, database, shared database).
+
+**Ground elevations**: for every pile the *Results* table, the pile details (Map, 3D view) and
+the exports show both the latest **survey Z** (with its date) and the **LIDAR Z**, the one in use
+in bold (the survey when there is one), and their difference.
+
+**Precision**: calculated values (tops of pile, cut/fill, set-out positions and shifts) are
+rounded to the **centimetre** (*Settings → Tracker & reveal → Round … to*, 0.01 m; 0 keeps them
+exact) and shown with 2 decimals; measured ground elevations keep 3. The rounding is part of the
+calculation, not only of the display: each pile's top is chosen among the centimetre values next
+to the exact optimum so that the angle limit, the reveal window, the flood minimum and the
+cut/fill cap all still hold on the rounded values, and set-out positions are rounded before the
+tracker is checked at them. On the project master file this gives 2,788 compliant and 4 graded
+trackers (1 to 5 cm of cut/fill on two or three piles), against 2,791 and 1 with exact values.
 
 The **average reveal** (Overview) is the mean height of the top of pile above the ground elevation
 in use, over every pile with a result, with the lowest and highest values and the mean over the
@@ -269,7 +283,12 @@ Google first shows "Google hasn't verified this app": *Continue*.
 When **every pile of a block** has a field-survey elevation and **every tracker** of it has a
 current result (by default also: every tracker compliant or graded), the page writes the block's
 Excel file for the installers into the shared folder, in **For installers** (Settings →
-*Installers' files*: on/off, folder name, columns, the compliance condition):
+*Installers' files*: on/off, folder name, columns, the compliance condition).
+
+*Where it is*: `For installers` is created automatically **inside the shared database folder**
+(the one chosen in *Settings → Shared database*), next to `tracker-top.db`, when the first block
+is complete; nothing else needs linking. Without a shared folder, no file is written (the
+Overview says so). Files:
 `Block 30 - pile heights rev 1.xlsx`, with a *Piles* sheet (by default: block, tracker, pile ID, pile
 type, colour, set-out Easting / Northing, ground Z, ToP, reveal, tracker status, comment) and an
 *About* sheet (block, revision, date, number of piles and trackers, how positions and tops were
@@ -294,6 +313,21 @@ Re-optimising with the same results does not create a new revision.
 A choice of columns and sheets can be saved as a **profile** (*Save as profile…*); profiles are
 stored in the database, so they are shared with everyone using it. Two come with every database:
 *Full* (everything) and *Installers* (the installers' files' columns).
+
+### Map
+
+The **Map** tab draws every pile in plan (design positions, north up), coloured by:
+
+- **Survey coverage** (default): surveyed / not surveyed yet (LIDAR or design ground) / no elevation;
+- **Survey date**: today, last 7 days, last 30 days, earlier, not surveyed;
+- **Tracker status**, **Reveal** (around the nominal reveal), **Survey − LIDAR** (blue: survey lower
+  than LIDAR, red: higher);
+- **Installers' file** by block: sent, complete but not sent yet, not complete.
+
+The legend gives counts and percentages; click a line to hide or show it. Drag to move, scroll or
+pinch to zoom, choose a block to zoom on it (the others fade), or type a tracker or pile ID. Click
+a pile for its details (both ground values, top, reveal, set-out), with links to the Results and
+the 3D view. *Save as image* downloads the map with its legend as a PNG.
 
 ### 3D view
 
@@ -381,7 +415,14 @@ docs/             how the code works
   days → `Block 30 - pile heights rev 1.xlsx` written once (Piles sheet: 702 rows with the
   installers' columns; About sheet); one pile re-surveyed 0.35 m higher → `rev 2`, whose About sheet
   names the revision it replaces.
-- 38 database tests now (10 more: revision tracking, taking / merging / conflicts between copies, a
+- Centimetre rounding on the project master file (36,913 piles): every top, cut/fill and set-out
+  coordinate on a whole centimetre; largest angle change 0.70°, reveals 1.20–1.60 m, no tracker
+  non-compliant; largest span-length difference from the rounded set-out 9.95 mm. 300 random
+  trackers in the tests: every limit holds after rounding.
+- 2D map with the project master file in the desktop program and the browser version: coverage,
+  survey date, status, reveal, survey − LIDAR and installers' modes, block zoom, pile details,
+  image export; no errors.
+- 39 database tests now (11 more: revision tracking, taking / merging / conflicts between copies, a
   desktop file and a browser copy with different page sizes, installers' files and revisions, export
   profiles, custom columns and blocks, average reveal).
 
@@ -389,9 +430,9 @@ docs/             how the code works
   in 2.8 s, survey import, Excel / ArcGIS / CSV / database downloads, data and settings kept after a
   reload, empty database then restore from a downloaded copy; also served from a sub-folder as
   GitHub Pages does.
-- 67 automated tests: 27 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
+- 71 automated tests: 30 optimiser (solver on analytic problems, flat/sloped/dipped terrain, randomised
   trackers, parallel == serial, flood minimum raising the window / forcing fill / unreachable,
-  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 38 database (file formats and header spellings, columns recognised from their values in any
+  set-out: motor pile detection, span lengths, angles at the set-out positions), 2 CLI, 39 database (file formats and header spellings, columns recognised from their values in any
   order, immutability triggers, duplicate files, ID and position matching, offset and jump checks,
   voiding, incremental re-runs, settings changes, flood layer in both modes, set-out, upgrade of a
   version 2 database in place, Excel and GeoPackage exports, the shared request handler, database

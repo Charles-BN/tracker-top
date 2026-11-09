@@ -10,6 +10,9 @@ const fmt = (v, d = 3) => {
   return /^-0\.?0*$/.test(s) ? s.slice(1) : s;
 };
 const int = (v) => (v ?? 0).toLocaleString();
+// Decimals of calculated values (tops, reveal, cut/fill, set-out): 2 when the
+// settings round them to the centimetre. Measured ground keeps 3.
+const dc = () => ((cache.summary?.settings?.round_step ?? 0) >= 0.0095 ? 2 : 3);
 const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0);
 
 const STATUS = {
@@ -59,7 +62,8 @@ async function apiRaw(method, url, body) {
     }
     return { bytes: new Uint8Array(r.body), filename: r.filename };
   }
-  const res = await fetch(url, { method, body, headers: body ? { 'Content-Type': 'application/octet-stream' } : {} });
+  const res = await fetch(url, { method, body, headers: body ? { 'Content-Type': 'application/octet-stream' } : {} })
+    .catch((e) => { throw unreachable(e); });
   if (!res.ok) {
     const text = await res.text();
     let msg = text || res.statusText;
@@ -69,6 +73,11 @@ async function apiRaw(method, url, body) {
   const cd = res.headers.get('Content-Disposition') || '';
   const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
   return { bytes: new Uint8Array(await res.arrayBuffer()), filename: m ? decodeURIComponent(m[1]) : null };
+}
+
+/** Desktop program: the page lost its connection to the program. */
+function unreachable(e) {
+  return new Error(`The tracker-top program on this computer does not answer (${e.message}): is its black window still open? Start tracker-top.exe again, then reload this page.`);
 }
 
 /** Download a GET API file (exports). */
@@ -96,7 +105,7 @@ async function apiCall(method, url, body, raw = false) {
     opts.body = raw ? body : JSON.stringify(body);
     opts.headers['Content-Type'] = raw ? 'application/octet-stream' : 'application/json';
   }
-  const res = await fetch(url, opts);
+  const res = await fetch(url, opts).catch((e) => { throw unreachable(e); });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -165,6 +174,7 @@ async function show(tab, rerender = false) {
   $$('.tab').forEach((s) => s.classList.toggle('active', s.id === `tab-${tab}`));
   if (location.hash !== `#${tab}`) history.replaceState(null, '', `#${tab}`);
   view?.setActive(tab === 'view3d');
+  map?.setActive(tab === 'map');
   if (changed || rerender) {
     try { await renderers[tab](); } catch (e) { toast(e.message, true); }
   }
@@ -520,7 +530,7 @@ function trackerRowsFor(state, t) {
   let s = 0;
   for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) {
     if (i > t.first_pile) s += Math.hypot(p.e[i] - p.e[i - 1], p.n[i] - p.n[i - 1]);
-    rows.push({ i, id: p.id[i], s, z: p.z[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i] });
+    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i] });
   }
   return rows;
 }
@@ -583,7 +593,7 @@ function drawTrackerTable() {
       <td>${esc(t.tracker)}</td><td>${esc(t.block)}</td><td class="num">${t.n_piles}</td>
       <td class="num">${t.n_survey}/${t.n_piles}</td>
       <td>${statusBadge(t.status)}${t.stale && t.run_id ? ' <span class="stale" title="Elevations or settings changed since this result">out of date</span>' : ''}</td>
-      <td class="num">${fmt(t.max_angle_deg, 3)}</td><td class="num">${fmt(t.max_cut_fill, 3)}</td></tr>`).join('');
+      <td class="num">${fmt(t.max_angle_deg, 3)}</td><td class="num">${fmt(t.max_cut_fill, dc())}</td></tr>`).join('');
   const more = list.length > rs.limit ? `<tr><td colspan="7" style="text-align:center"><button class="btn small" id="show-more">Show ${int(Math.min(400, list.length - rs.limit))} more</button></td></tr>` : '';
   const table = $('#tracker-table');
   table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No tracker matches these filters.</td></tr>'}${more}</tbody>`;
@@ -615,13 +625,17 @@ function renderDetail(t) {
     const over = r.ang != null && Math.abs(r.ang) > settings.max_angle_deg + 0.001;
     const sh = p.shift[i];
     const big = sh != null && Math.abs(sh) > settings.shift_warn_m;
-    const shiftCell = `<td class="num" title="${p.se[i] == null ? '' : `Set-out E ${fmt(p.se[i], 3)}  N ${fmt(p.sn[i], 3)}`}"${big ? ' style="color:var(--warning-text);font-weight:600"' : ''}>${sh == null ? '–' : (sh * 1000).toFixed(0)}</td>`;
+    const d = dc();
+    const shiftCell = `<td class="num" title="${p.se[i] == null ? '' : `Set-out E ${fmt(p.se[i], d)}  N ${fmt(p.sn[i], d)}`}"${big ? ' style="color:var(--warning-text);font-weight:600"' : ''}>${sh == null ? '–' : fmt(sh, d)}</td>`;
     const flood = p.flood[i] == null ? '–' : `${fmt(p.flood[i], 2)}${p.mta[i] ? ' <span class="raised" title="Top raised to stay above the flood level">▲</span>' : ''}`;
+    const used = (k) => (p.zsrc[i] === k ? ' class="num used" title="Ground in use"' : ' class="num muted"');
+    const diff = p.zs[i] != null && p.zl[i] != null ? p.zs[i] - p.zl[i] : null;
     return `<tr>
       <td>${esc(p.id[i])}</td><td><span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}</span></td>
-      <td class="num">${fmt(p.z[i])}</td>
-      <td class="muted">${p.zsrc[i] === 'survey' ? `survey ${esc(p.zdate[i])}` : p.zsrc[i] === 'lidar' ? 'LIDAR' : 'none'}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠ ${fmt(p.offset[i], 2)} m</span>` : ''}</td>
-      <td class="num">${fmt(p.cf[i])}</td><td class="num"><b>${fmt(p.top[i])}</b></td>${shiftCell}<td class="num">${fmt(p.rev[i])}</td>
+      <td${used('survey')}>${p.zs[i] == null ? '–' : `<span title="Survey of ${esc(p.zdate[i] ?? '')}">${fmt(p.zs[i])}</span>`}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠</span>` : ''}</td>
+      <td${used('lidar')}>${fmt(p.zl[i])}</td>
+      <td class="num">${diff == null ? '' : fmt(diff, d)}</td>
+      <td class="num">${fmt(p.cf[i], d)}</td><td class="num"><b>${fmt(p.top[i], d)}</b></td>${shiftCell}<td class="num">${fmt(p.rev[i], d)}</td>
       ${hasFlood ? `<td class="num" title="${p.mintop[i] == null ? '' : `Lowest allowed top: ${fmt(p.mintop[i])}`}">${flood}</td>` : ''}
       <td class="num"${over ? ' style="color:var(--critical-text);font-weight:600"' : ''}>${fmt(p.ang[i], 3)}${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}</td></tr>`;
   }).join('');
@@ -635,16 +649,16 @@ function renderDetail(t) {
       <div><span>Piles surveyed</span><b>${t.n_survey} of ${t.n_piles}</b></div>
       <div><span>LIDAR only</span><b>${t.n_lidar}</b></div>
       <div><span>Max angle change</span><b>${fmt(t.max_angle_deg, 3)}°</b></div>
-      <div><span>Max cut/fill</span><b>${fmt(t.max_cut_fill, 3)} m</b></div>
+      <div><span>Max cut/fill</span><b>${fmt(t.max_cut_fill, dc())} m</b></div>
       ${t.anchor_pile ? `<div><span>Fixed pile (set-out)</span><b>${esc(t.anchor_pile.split('.').pop())}${t.anchor_motor ? ' · motor' : ' · middle'}</b></div>
-      <div><span>Largest shift</span><b>${((t.max_shift ?? 0) * 1000).toFixed(0)} mm</b></div>
-      <div title="Largest difference between a span's length along the tube and its design length"><span>Span check</span><b>${t.span_error != null && t.span_error < 0.0005 ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(2)} mm</b></div>` : ''}
+      <div><span>Largest shift</span><b>${fmt(t.max_shift ?? 0, dc())} m</b></div>
+      <div title="Largest difference between a span's length along the tube and its design length, from the (rounded) set-out positions and tops"><span>Span check</span><b>${t.span_error != null && t.span_error <= (settings.round_step || 0) + 0.0005 ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(1)} mm</b></div>` : ''}
       <div><span>Result of</span><b>${esc(t.run_at?.slice(0, 16) ?? '–')}</b></div>
       <div><span>Flood values</span><b>${t.n_flood ? `${t.n_flood} of ${t.n_piles} · ${t.n_flood_raised} raised` : 'none'}</b></div>
     </div>
     <div id="profile"></div>
     <div class="table-wrap" style="margin-top:12px"><table>
-      <thead><tr><th>Pile</th><th>Type</th><th class="num">Ground Z</th><th>Source</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num" title="Move along the tracker from the design position, to keep the torque-tube spans at their design length. Hover for the set-out coordinates.">Shift (mm)</th><th class="num">Reveal</th>${hasFlood ? '<th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th>' : ''}<th class="num">Angle (°)</th></tr></thead>
+      <thead><tr><th>Pile</th><th>Type</th><th class="num" title="Latest field survey (hover for its date). Bold: the ground in use.">Survey Z</th><th class="num" title="LIDAR / design ground. Bold: the ground in use.">LIDAR Z</th><th class="num" title="Survey minus LIDAR (m)">Δ</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num" title="Move along the tracker from the design position (m), to keep the torque-tube spans at their design length. Hover for the set-out coordinates.">Shift</th><th class="num">Reveal</th>${hasFlood ? '<th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th>' : ''}<th class="num">Angle (°)</th></tr></thead>
       <tbody>${piles}</tbody></table></div>`;
   renderProfile($('#profile', el), rows, settings);
   $('#detail-3d').addEventListener('click', async () => {
@@ -681,35 +695,85 @@ renderers.view3d = async () => {
   if (view.data !== state) view.setData(state, sum.settings);
 };
 
-function showPileInfo(i) {
+/** Details of pile i, in the floating panel of the 3D view or the map. */
+function showPileInfo(i, panel = '#v3-info') {
   const st = cache.state, p = st.piles, s = cache.summary.settings;
   const t = st.trackers.find((t) => i >= t.first_pile && i < t.first_pile + t.n_piles);
+  const d = dc();
   const row = (k, v) => `<div class="row"><span>${k}</span><span class="num">${v}</span></div>`;
-  const el = $('#v3-info');
+  const el = $(panel);
+  const inUse = (k) => (p.zsrc[i] === k ? ' <span class="muted">in use</span>' : '');
+  const diff = p.zs[i] != null && p.zl[i] != null ? p.zs[i] - p.zl[i] : null;
   el.hidden = false;
-  el.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline"><b>${esc(p.id[i])}</b><button class="btn small" id="v3-close" aria-label="Close">✕</button></div>
+  el.innerHTML = `<div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline"><b>${esc(p.id[i])}</b><button class="btn small" data-close aria-label="Close">✕</button></div>
     <div style="margin:6px 0">${statusBadge(t?.status)}</div>
     ${row('Tracker', esc(p.tracker[i]))}
+    ${row('Block', esc(p.block[i] || '–'))}
     ${row('Pile type', `<span class="type-cell">${swatch(p.color[i])}${esc(p.type[i] || '–')}</span>`)}
     ${p.ttype[i] ? row('Tracker type', esc(p.ttype[i])) : ''}
     ${row('Easting', fmt(p.e[i], 3))}
     ${row('Northing', fmt(p.n[i], 3))}
-    ${p.se[i] != null ? row('Set-out E / N', `${fmt(p.se[i], 3)} / ${fmt(p.sn[i], 3)}`) + row('Shift along tracker', `${(p.shift[i] * 1000).toFixed(0)} mm`) : ''}
-    ${row('Ground Z', `${fmt(p.z[i])} <span class="muted">${p.zsrc[i] === 'survey' ? 'survey ' + esc(p.zdate[i]) : p.zsrc[i] === 'lidar' ? 'LIDAR' : ''}</span>`)}
-    ${row('Cut / fill', fmt(p.cf[i]))}
-    ${row('Top of pile', `<b>${fmt(p.top[i])}</b>`)}
-    ${row('Reveal', fmt(p.rev[i]))}
-    ${p.flood[i] != null ? row('Flood water level', `${fmt(p.flvl[i])} <span class="muted">value ${fmt(p.flood[i], 2)}</span>`) + row('Lowest allowed top', `${fmt(p.mintop[i])}${p.mta[i] ? ' <span class="muted">raised</span>' : ''}`) : ''}
+    ${p.se[i] != null ? row('Set-out E / N', `${fmt(p.se[i], d)} / ${fmt(p.sn[i], d)}`) + row('Shift along tracker', `${fmt(p.shift[i], d)} m`) : ''}
+    ${row('Survey Z', p.zs[i] == null ? '<span class="muted">not surveyed</span>' : `${fmt(p.zs[i])} <span class="muted">${esc(p.zdate[i] ?? '')}</span>${inUse('survey')}`)}
+    ${row('LIDAR Z', `${fmt(p.zl[i])}${inUse('lidar')}`)}
+    ${diff != null ? row('Survey − LIDAR', `${fmt(diff, d)} m`) : ''}
+    ${row('Cut / fill', fmt(p.cf[i], d))}
+    ${row('Top of pile', `<b>${fmt(p.top[i], d)}</b>`)}
+    ${row('Reveal', fmt(p.rev[i], d))}
+    ${p.flood[i] != null ? row('Flood water level', `${fmt(p.flvl[i], d)} <span class="muted">value ${fmt(p.flood[i], 2)}</span>`) + row('Lowest allowed top', `${fmt(p.mintop[i], d)}${p.mta[i] ? ' <span class="muted">raised</span>' : ''}`) : ''}
     ${row('Angle change', `${fmt(p.ang[i], 3)}° <span class="muted">/ ${s.max_angle_deg}°</span>`)}
-    <button class="btn small" id="v3-open" style="margin-top:8px;width:100%">Open tracker in Results</button>`;
-  $('#v3-close').addEventListener('click', () => { el.hidden = true; });
-  $('#v3-open').addEventListener('click', async () => {
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <button class="btn small" data-open style="flex:1">Open in Results</button>
+      ${panel === '#v3-info' ? '' : '<button class="btn small" data-3d style="flex:1">Show in 3D</button>'}
+    </div>`;
+  el.querySelector('[data-close]').addEventListener('click', () => { el.hidden = true; });
+  el.querySelector('[data-open]').addEventListener('click', async () => {
     rs.selected = p.tracker[i];
     $('#f-search').value = p.tracker[i];
     await show('results');
     renderDetail(t);
   });
+  el.querySelector('[data-3d]')?.addEventListener('click', async () => {
+    await show('view3d');
+    if (view?.focusTracker(p.tracker[i])) $('#v3-find').value = p.tracker[i];
+  });
 }
+
+// ---------------------------------------------------------------- map
+
+let map = null;
+
+renderers.map = async () => {
+  const [state, sum] = await Promise.all([loadState(), loadSummary()]);
+  if (!map) {
+    const { Map2D } = await import('./map2d.js');
+    map = new Map2D($('#m2-main'), $('#m2-legend'), (i) => showPileInfo(i, '#m2-info'));
+    $('#m2-mode').addEventListener('change', (e) => map.setMode(e.target.value));
+    $('#m2-block').addEventListener('change', (e) => map.setBlock(e.target.value));
+    $('#m2-lines').addEventListener('change', (e) => map.setOptions({ lines: e.target.checked }));
+    $('#m2-labels').addEventListener('change', (e) => map.setOptions({ labels: e.target.checked }));
+    $('#m2-in').addEventListener('click', () => map.zoom(1.6));
+    $('#m2-out').addEventListener('click', () => map.zoom(1 / 1.6));
+    $('#m2-fit').addEventListener('click', () => { $('#m2-block').value = ''; map.setBlock(''); });
+    $('#m2-find').addEventListener('change', (e) => { if (e.target.value && !map.find(e.target.value)) toast(`"${e.target.value}" not found.`, true); });
+    $('#m2-save').addEventListener('click', async () => {
+      const blob = await map.image();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `tracker-top map ${$('#m2-mode').selectedOptions[0].text} ${new Date().toISOString().slice(0, 10)}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+    });
+  }
+  map.setActive(current === 'map');
+  const blocks = [...new Set(state.piles.block)].sort(natural);
+  fillSelect($('#m2-block'), blocks.map((b) => [b, null]), 'All blocks', { '': '(no block)' });
+  $('#v3-trackers').innerHTML = state.trackers.map((t) => `<option value="${esc(t.tracker)}">`).join('');
+  if (!state.piles.id.length) { $('#m2-legend').innerHTML = '<span class="muted">No piles yet: import the master pile list.</span>'; return; }
+  if (map.state !== state || map.summary !== sum) map.setData(state, sum);
+};
 
 // ---------------------------------------------------------------- history
 
@@ -914,6 +978,7 @@ const OPT_FIELDS = [
   ['max_angle_deg', 'Max angle change between spans', '°', 'The NX Horizon XTR limit is 0.75°; 0.70° keeps a margin.'],
   ['max_cut_fill', 'Max cut/fill at a pile', 'm', 'Grading is never larger than this.'],
   ['grading_threshold', 'Grading counted above', 'm', 'A tracker needing more cut/fill than this is "Graded".'],
+  ['round_step', 'Round tops, cut/fill and set-out to', 'm', '0.01 = the centimetre; 0 = exact values. Every limit is checked on the rounded values.'],
 ];
 const MATCH_FIELDS = [
   ['match_radius_m', 'Match by position within', 'm', 'A survey point with an unknown ID is matched to the nearest pile within this distance.'],
@@ -1042,6 +1107,31 @@ $('#settings-form').addEventListener('submit', async (e) => {
   }
 });
 
+// ---------------------------------------------------------------- updates
+
+// Browser version: browsers and company proxies may keep the old site's files
+// for a while after an update. version.json is read past every cache; when it
+// names another build, offer to reload. The new address (?v=...) makes sure the
+// page itself is fetched again.
+let updateOffered = false;
+async function checkForUpdate() {
+  if (updateOffered) return;
+  try {
+    const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const { build } = await res.json();
+    if (!build || build === window.TRACKER_TOP_BUILD) return;
+    updateOffered = true;
+    const bar = document.createElement('div');
+    bar.className = 'update-bar';
+    bar.innerHTML = '<span>A new version of tracker-top is available.</span> <button class="btn small primary" type="button">Reload now</button>';
+    bar.querySelector('button').addEventListener('click', () => {
+      location.replace(`${location.pathname}?v=${encodeURIComponent(build)}${location.hash}`);
+    });
+    document.body.prepend(bar);
+  } catch { /* offline: try again later */ }
+}
+
 // ---------------------------------------------------------------- start
 
 async function poll() {
@@ -1111,4 +1201,9 @@ async function poll() {
   await show(location.hash.slice(1) || 'overview', true);
   sync.load().catch((e) => toast(`Shared database: ${e.message}`, true));
   setInterval(poll, 15000);
+  if (window.TRACKER_TOP_BUILD) {
+    checkForUpdate();
+    setInterval(checkForUpdate, 5 * 60_000);
+    window.addEventListener('focus', checkForUpdate);
+  }
 })();

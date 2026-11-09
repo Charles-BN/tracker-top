@@ -207,7 +207,7 @@ const PILE_COLUMNS: &str = "pile_id TEXT, tracker TEXT, block TEXT, section TEXT
     easting REAL, northing REAL, set_e REAL, set_n REAL, shift REAL, ground_z REAL, z_source TEXT, z_date TEXT, survey_offset REAL, n_surveys INTEGER,
     flood_value REAL, flood_level REAL, min_top REAL, raised_flood INTEGER,
     new_ground REAL, cut_fill REAL, top REAL, reveal REAL, angle_diff REAL,
-    tracker_status TEXT, up_to_date INTEGER, run_id INTEGER";
+    tracker_status TEXT, up_to_date INTEGER, run_id INTEGER, z_survey REAL, z_lidar REAL";
 
 const TRACKER_COLUMNS: &str = "tracker TEXT, block TEXT, section TEXT, tracker_type TEXT, n_piles INTEGER, n_surveyed INTEGER,
     n_lidar INTEGER, n_missing INTEGER, status TEXT, up_to_date INTEGER, max_angle REAL, max_cut_fill REAL,
@@ -319,8 +319,8 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
             "INSERT INTO piles (geom, pile_id, tracker, block, section, tracker_type, pile_type, color, easting, northing,
                 set_e, set_n, shift,
                 ground_z, z_source, z_date, survey_offset, n_surveys, flood_value, flood_level, min_top, raised_flood,
-                new_ground, cut_fill, top, reveal, angle_diff, tracker_status, up_to_date, run_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+                new_ground, cut_fill, top, reveal, angle_diff, tracker_status, up_to_date, run_id, z_survey, z_lidar)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
         )?;
         for t in &state.trackers {
             for p in &state.piles[t.first_pile..t.first_pile + t.n_piles] {
@@ -360,6 +360,8 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
                     t.status,
                     up_to_date(t),
                     r.map(|r| r.run_id),
+                    p.z_survey,
+                    p.z_lidar,
                 ])?;
             }
         }

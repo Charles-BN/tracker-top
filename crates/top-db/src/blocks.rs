@@ -468,7 +468,7 @@ mod tests {
             blocks: vec!["A".into()],
             sheets: vec![],
         };
-        let csv = export::piles_csv_with(&st, &spec).unwrap();
+        let csv = export::piles_csv_with(&st, &spec, &s.settings().unwrap()).unwrap();
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines[0], "Pile ID,ToP,Reveal (m)");
         assert_eq!(lines.len(), 7);
@@ -478,19 +478,19 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            export::piles_csv_with(&st, &bad)
+            export::piles_csv_with(&st, &bad, &s.settings().unwrap())
                 .unwrap_err()
                 .contains("colour")
         );
-        // The full export is unchanged.
+        // The full export: every column.
         assert_eq!(
-            export::piles_csv(&st)
+            export::piles_csv(&st, &s.settings().unwrap())
                 .lines()
                 .next()
                 .unwrap()
                 .split(',')
                 .count(),
-            30
+            33
         );
     }
 
