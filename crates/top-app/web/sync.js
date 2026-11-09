@@ -167,7 +167,19 @@ class DriveTarget {
       e.signIn = true;
       throw e;
     }
-    const res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${this.token.access}`, ...(opts.headers || {}) } });
+    const send = () => fetch(url, { ...opts, headers: { Authorization: `Bearer ${this.token.access}`, ...(opts.headers || {}) } });
+    let res;
+    try {
+      res = await send();
+    } catch {
+      // No answer at all (network, firewall, proxy): try once more.
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        res = await send();
+      } catch (e) {
+        throw new Error(`Google Drive could not be reached (${new URL(url).host}: ${e.message}). Check the internet connection; a company network, proxy or firewall may block Google Drive, or a browser extension may block it.`);
+      }
+    }
     if (res.status === 401) {
       this.token = null;
       const e = new Error('Google Drive: sign in again (click Connect)');
@@ -384,6 +396,7 @@ export function createSync(io) {
     if (!state.target || state.phase === 'needs-permission' || state.phase === 'conflict') return Promise.resolve();
     if (running) { again = true; return running; }
     const run = async () => {
+      step = '';
       state.phase = 'working';
       notify();
       try {
@@ -392,7 +405,8 @@ export function createSync(io) {
         state.phase = 'idle';
         state.message = '';
       } catch (e) {
-        if (e.signIn) { state.phase = 'needs-permission'; state.message = e.message; } else if (state.phase !== 'conflict') { state.phase = 'error'; state.message = e.message || String(e); }
+        const where = step ? `While ${step}: ` : '';
+        if (e.signIn) { state.phase = 'needs-permission'; state.message = e.message; } else if (state.phase !== 'conflict') { state.phase = 'error'; state.message = where + (e.message || String(e)); }
       } finally {
         state.lastCheck = new Date();
         try { state.status = await io.json('GET', 'api/sync/status'); } catch { /* keep the last one */ }
@@ -409,12 +423,18 @@ export function createSync(io) {
     return running;
   }
 
+  // What the exchange is doing, named in error messages.
+  let step = '';
+
   async function exchange() {
     const t = state.target;
     for (let attempt = 0; attempt < 4; attempt++) {
+      step = 'looking for the shared database';
       const st = await t.stat(DB_FILE);
       if (st && st.stamp !== lastStamp) {
+        step = 'downloading the shared database';
         const bytes = await t.read(DB_FILE);
+        step = 'merging the shared database';
         const rep = await io.json('POST', `api/sync/incoming?by=${by()}`, bytes, true);
         lastStamp = st.stamp;
         await remember();
@@ -430,9 +450,12 @@ export function createSync(io) {
       state.status = status;
       if (!status.dirty) return;
       if (!st && status.imports === 0) return; // nothing worth creating the shared file for
+      step = 'preparing this computer\'s database';
       const snap = await io.bytes('POST', `api/sync/snapshot?by=${by()}`);
+      step = 'checking the shared database';
       const now = await t.stat(DB_FILE);
       if (now && now.stamp !== lastStamp) continue; // saved elsewhere meanwhile: take it in first
+      step = `uploading the database (${(snap.bytes.byteLength / 1e6).toFixed(1)} MB)`;
       const written = await t.write(DB_FILE, snap.bytes);
       lastStamp = written?.stamp ?? null;
       await remember();
@@ -448,6 +471,7 @@ export function createSync(io) {
     const blocks = (await io.json('GET', 'api/blocks')).filter((b) => b.needs_export);
     let sent = 0;
     for (const b of blocks) {
+      step = `writing the installers' file of block ${b.block}`;
       const file = await io.bytes('GET', `api/export/block.xlsx?block=${encodeURIComponent(b.block)}`);
       const name = file.filename || `Block ${b.block} - pile heights rev ${b.next_revision}.xlsx`;
       const folder = settings.auto_export_folder.split('/').map((s) => s.trim()).filter(Boolean).join('/');

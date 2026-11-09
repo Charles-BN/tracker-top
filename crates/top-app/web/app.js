@@ -62,7 +62,8 @@ async function apiRaw(method, url, body) {
     }
     return { bytes: new Uint8Array(r.body), filename: r.filename };
   }
-  const res = await fetch(url, { method, body, headers: body ? { 'Content-Type': 'application/octet-stream' } : {} });
+  const res = await fetch(url, { method, body, headers: body ? { 'Content-Type': 'application/octet-stream' } : {} })
+    .catch((e) => { throw unreachable(e); });
   if (!res.ok) {
     const text = await res.text();
     let msg = text || res.statusText;
@@ -72,6 +73,11 @@ async function apiRaw(method, url, body) {
   const cd = res.headers.get('Content-Disposition') || '';
   const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
   return { bytes: new Uint8Array(await res.arrayBuffer()), filename: m ? decodeURIComponent(m[1]) : null };
+}
+
+/** Desktop program: the page lost its connection to the program. */
+function unreachable(e) {
+  return new Error(`The tracker-top program on this computer does not answer (${e.message}): is its black window still open? Start tracker-top.exe again, then reload this page.`);
 }
 
 /** Download a GET API file (exports). */
@@ -99,7 +105,7 @@ async function apiCall(method, url, body, raw = false) {
     opts.body = raw ? body : JSON.stringify(body);
     opts.headers['Content-Type'] = raw ? 'application/octet-stream' : 'application/json';
   }
-  const res = await fetch(url, opts);
+  const res = await fetch(url, opts).catch((e) => { throw unreachable(e); });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
