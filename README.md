@@ -147,19 +147,27 @@ as a survey. All tolerances are in Settings.
 
 ### Flood
 
-Each pile can have a flood value (metres). Its top must stay above the flood water:
+Each pile can have a flood value (metres): the **flood level** (water elevation, same datum as
+the ground; the default) or the flood depth. Use the level: it does not depend on the ground,
+which moves away from the LIDAR the flood study was based on. A file with both a depth and a
+level column gives the one chosen in *Settings → Flood*; a file with only the other kind is
+refused rather than misread.
+
+The project rule (*Settings → Flood*): at the reference pile height (1.075 m) the lowest module
+edge is 0.30 m above the ground, and it must stay 0.10 m (freeboard) above the flood level. So:
 
 ```
-lowest allowed top = flood water level + clearance
-flood water level  = ground + value        (Settings: "water depth above the ground", default)
-                   = value                 (Settings: "water level, same datum as the ground")
+lowest allowed top = flood level + freeboard + (pile height - module clearance)
+                   = flood level + 0.10 + (1.075 - 0.30) = flood level + 0.875 m
 ```
 
-The clearance (Settings, default 0) should include the drop from the top of pile to the lowest
-module edge at maximum tilt, plus any freeboard. With no grading this raises the bottom of the
-reveal window (e.g. [1.20, 1.60] becomes [1.50, 1.60] for 1.50 m of water); if the flood needs a
-reveal above the maximum, the optimiser adds fill (tracker *Graded*), and if that would exceed
-the cut/fill cap the tracker is *Non-compliant*.
+With a 1.075 m pile, water up to 0.30 - 0.10 = 0.20 m deep needs no raise; deeper, the pile is
+raised by depth - 0.20 m (0.45 m of water: +0.25 m, pile 1.325 m, module 0.55 m above the
+ground, 0.10 m above the water). The optimiser applies it as a lowest top for each pile: it
+raises a pile only when its top would otherwise be lower (with the [1.20, 1.60] reveal window,
+water up to 0.325 m deep needs no raise). If the flood needs a reveal above the maximum, the
+optimiser adds fill (tracker *Graded*), and if that would exceed the cut/fill cap the tracker is
+*Non-compliant*.
 
 Load the values with **Import → Flood values** (pile ID plus a column such as `Flood`,
 `Flood depth (m)`, `Flood level`, `Inondation`, `PHE`), or as a `Flood` column of the master list.

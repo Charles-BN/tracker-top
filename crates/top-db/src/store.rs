@@ -3,8 +3,8 @@
 
 use crate::dates::find_date;
 use crate::report::{ImportReport, Level};
-use crate::settings::Settings;
-use crate::table::{Col, Table, parse_num, read_table};
+use crate::settings::{FloodMode, Settings};
+use crate::table::{Col, Table, norm_header, parse_num, read_table};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -535,7 +535,14 @@ impl Store {
     pub fn settings(&self) -> Result<Settings> {
         match self.meta("settings")? {
             Some(json) => {
-                serde_json::from_str(&json).map_err(|e| format!("stored settings are invalid: {e}"))
+                let mut s: Settings = serde_json::from_str(&json)
+                    .map_err(|e| format!("stored settings are invalid: {e}"))?;
+                // Saved before the flood rule (pile height, module clearance,
+                // freeboard): flood values are now water levels by default.
+                if !json.contains("\"flood_freeboard_m\"") {
+                    s.flood_mode = crate::FloodMode::Elevation;
+                }
+                Ok(s)
             }
             None => Ok(Settings::default()),
         }
@@ -1108,6 +1115,67 @@ impl Store {
         let mut c_e = table.find(Col::Easting);
         let mut c_n = table.find(Col::Northing);
         let mut c_z = table.find(value_col);
+        if flood {
+            // A flood file may give both depths and levels: read the one the
+            // settings ask for, and never take one for the other.
+            let kind_of = |c: usize| {
+                let h = norm_header(&table.headers[c]);
+                if ["dept", "hauteur", "profondeur", "height"]
+                    .iter()
+                    .any(|k| h.contains(k))
+                {
+                    Some(FloodMode::Depth)
+                } else if ["leve", "elev", "niveau", "cote", "phe", "wse", "z"]
+                    .iter()
+                    .any(|k| h.contains(k))
+                {
+                    Some(FloodMode::Elevation)
+                } else {
+                    None
+                }
+            };
+            let cols = table.find_all(Col::Flood);
+            let want = s.flood_mode;
+            let name = |m: FloodMode| match m {
+                FloodMode::Depth => "depth",
+                FloodMode::Elevation => "level",
+            };
+            let pick = cols
+                .iter()
+                .copied()
+                .find(|&c| kind_of(c) == Some(want))
+                .or_else(|| cols.iter().copied().find(|&c| kind_of(c).is_none()));
+            let other = cols
+                .iter()
+                .copied()
+                .find(|&c| kind_of(c).is_some_and(|k| k != want));
+            match (pick, other) {
+                (Some(c), o) => {
+                    c_z = Some(c);
+                    if let Some(o) = o {
+                        rep.info(&format!(
+                            "Flood {} read from column \"{}\" (Settings > Flood); the flood {} column \"{}\" is not used.",
+                            name(want),
+                            table.headers[c],
+                            name(if want == FloodMode::Depth { FloodMode::Elevation } else { FloodMode::Depth }),
+                            table.headers[o]
+                        ));
+                    }
+                }
+                (None, Some(o)) => {
+                    rep.error(&format!(
+                        "This file gives flood {}s (column \"{}\") but Settings > Flood says flood values are {}s. \
+                         Change the setting, or import a file with flood {}s.",
+                        name(if want == FloodMode::Depth { FloodMode::Elevation } else { FloodMode::Depth }),
+                        table.headers[o],
+                        name(want),
+                        name(want)
+                    ));
+                    return Ok(rep);
+                }
+                (None, None) => {}
+            }
+        }
         let c_code = table.find(Col::Code);
         let c_date = table.find(Col::Date);
         let width = table.headers.len();
@@ -2510,6 +2578,16 @@ mod tests {
                 .accepted
         );
 
+        // This test reads depths, with the top of pile right at the water.
+        let mut set = s.settings().unwrap();
+        set.flood_mode = crate::FloodMode::Depth;
+        (
+            set.flood_pile_height_m,
+            set.flood_module_clearance_m,
+            set.flood_freeboard_m,
+        ) = (0.0, 0.0, 0.0);
+        s.set_settings(&set).unwrap();
+        s.optimize(false, "t", 1).unwrap();
         // Flood depths for tracker T1 only: 1.50 m of water, above the 1.45 m nominal reveal.
         let flood = "Pile ID,Flood depth (m)\nP1.0,1.5\nP1.1,1.5\nP1.2,1.5\nP1.3,1.5\nP1.4,1.5\n";
         let rep = s
@@ -2542,7 +2620,7 @@ mod tests {
         // 0.25 m clearance: tops must be 1.75 m above ground, beyond the 1.60 m
         // maximum reveal, so about 0.15 m of fill is needed.
         let mut set = s.settings().unwrap();
-        set.flood_clearance_m = 0.25;
+        set.flood_freeboard_m = 0.25;
         s.set_settings(&set).unwrap();
         s.optimize(false, "t", 1).unwrap();
         let st = s.state().unwrap();
@@ -2561,7 +2639,7 @@ mod tests {
                 .accepted
         );
         set.flood_mode = crate::FloodMode::Elevation;
-        set.flood_clearance_m = 0.0;
+        set.flood_freeboard_m = 0.0;
         s.set_settings(&set).unwrap();
         let levels = "Pile ID;PHE\nP1.0;11,0\nP1.1;11,0\nP1.2;11,62\nP1.3;11,0\nP1.4;11,0\n";
         let rep = s
@@ -3017,5 +3095,70 @@ mod tests {
             .collect();
         assert_eq!(row[col("Survey - LIDAR (m)")], "0.12");
         assert_eq!(row[col("LIDAR Z")], format!("{lidar:.3}"));
+    }
+
+    #[test]
+    fn flood_levels_follow_the_project_rule() {
+        // Flat ground at 10.0, three piles under water: 0.10 m, 0.20 m and
+        // 0.45 m deep (levels 10.10, 10.20, 10.45). Pile height 1.075 m gives
+        // the module 0.30 m of clearance; 0.10 m freeboard is required.
+        let mut s = Store::open_in_memory().unwrap();
+        let mut master = String::from("Pile ID;Tracker;Easting;Northing;Z LIDAR\n");
+        for i in 0..7 {
+            master.push_str(&format!("P1.{i};T1;0;{};10,0\n", i * 8));
+        }
+        assert!(
+            s.import_file(Kind::Master, "m.csv", master.as_bytes(), None, "t")
+                .unwrap()
+                .accepted
+        );
+        let mut set = s.settings().unwrap();
+        assert_eq!(
+            set.flood_mode,
+            crate::FloodMode::Elevation,
+            "levels by default"
+        );
+        assert!((set.flood_clearance() - 0.875).abs() < 1e-12);
+        // Let the reveal go down to the rule's 1.075 m so the rule alone shows.
+        set.delta_min = 1.075 - set.reveal_nominal;
+        set.reveal_nominal = 1.075;
+        set.delta_max = 0.5;
+        s.set_settings(&set).unwrap();
+        // Both columns: the level is used, the depth is not.
+        let flood = "Pile ID;Flood depth (m);Flood level (m)\nP1.2;0,10;10,10\nP1.3;0,20;10,20\nP1.4;0,45;10,45\n";
+        let rep = s
+            .import_file(Kind::Flood, "flood.csv", flood.as_bytes(), None, "t")
+            .unwrap();
+        let text = findings(&rep);
+        assert!(rep.accepted, "{text}");
+        assert!(
+            text.contains("Flood level read from column \"Flood level (m)\""),
+            "{text}"
+        );
+        s.optimize(false, "t", 1).unwrap();
+        let st = s.state().unwrap();
+        let reveal = |id: &str| pile(&st, id).result.as_ref().unwrap().reveal;
+        let min_top = |id: &str| pile(&st, id).min_top.unwrap();
+        // Up to 0.20 m of water: no raise needed (minimum top at or below 1.075 m).
+        assert!(min_top("P1.2") - 10.0 < 1.075 + 1e-9 && min_top("P1.3") - 10.0 < 1.075 + 1e-9);
+        // 0.45 m of water: 0.45 - 0.20 = 0.25 m higher, pile 1.325 m, module
+        // at 0.55 m, 0.10 m above the water.
+        assert!(
+            (min_top("P1.4") - 11.325).abs() < 1e-9,
+            "{}",
+            min_top("P1.4")
+        );
+        assert!(reveal("P1.4") >= 1.325 - 1e-6, "{}", reveal("P1.4"));
+        assert!(pile(&st, "P1.4").result.as_ref().unwrap().min_top_active);
+        // A depth-only file is refused while the settings ask for levels.
+        let depths = "Pile ID;Flood depth\nP1.0;0,3\n";
+        let rep = s
+            .import_file(Kind::Flood, "d.csv", depths.as_bytes(), None, "t")
+            .unwrap();
+        assert!(
+            !rep.accepted && findings(&rep).contains("gives flood depths"),
+            "{}",
+            findings(&rep)
+        );
     }
 }

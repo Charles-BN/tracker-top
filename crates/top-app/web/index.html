@@ -58,7 +58,7 @@
       </div>
       <div class="card">
         <div class="card-head"><h2>Flood values</h2><span class="muted" id="flood-count">not loaded yet</span></div>
-        <p class="ink2">One value per pile, in metres: water depth above ground, or water level (see Settings). Each pile's top is kept above the flood water plus a clearance, which raises the bottom of the reveal window. Pile ID plus a column such as Flood, Flood depth or Flood level. A newer file replaces older values.</p>
+        <p class="ink2">One value per pile, in metres: flood level (water elevation) or flood depth, as chosen in Settings &gt; Flood (level by default; a file with both columns gives the chosen one). Each pile's top is kept high enough for the modules to stay above the water with the required freeboard, which raises the bottom of the reveal window where needed. Pile ID plus a column such as Flood level, PHE or Flood depth. A newer file replaces older values.</p>
         <div class="drop" data-kind="flood" tabindex="0" role="button" aria-label="Choose a flood file" style="margin-top:12px"><b>Drop a flood file here</b><br>or click to choose.</div>
       </div>
     </div>
@@ -174,18 +174,27 @@
       <div class="card">
         <div class="card-head"><h2>Flood</h2><span class="muted">Changing these re-optimises every tracker.</span></div>
         <div class="settings-grid">
-          <label class="field"><span>Flood value of a pile is</span>
+          <label class="field"><span>Flood values used</span>
             <select name="flood_mode">
-              <option value="depth">Water depth above the ground (m)</option>
-              <option value="elevation">Water level, same datum as the ground (m)</option>
+              <option value="elevation">Flood level (water elevation, same datum as the ground)</option>
+              <option value="depth">Flood depth above the ground</option>
             </select>
-            <small>Depth: water level = ground elevation in use + value. Level: the value itself.</small>
+            <small>Level is recommended: it does not depend on the ground, which moves away from the LIDAR the flood study used. A file with both columns: the chosen one is read.</small>
           </label>
-          <label class="field"><span>Clearance above flood water (m)</span>
-            <input type="number" step="any" name="flood_clearance_m" required>
-            <small>Lowest allowed top of pile = water level + clearance. Include the drop from the top of pile to the lowest module edge at maximum tilt, plus any freeboard.</small>
+          <label class="field"><span>Pile height of reference (m)</span>
+            <input type="number" step="any" min="0" name="flood_pile_height_m" required>
+            <small>Height of the top of pile above the ground for which the module clearance below is given (minimum pile height).</small>
+          </label>
+          <label class="field"><span>Module clearance at that height (m)</span>
+            <input type="number" step="any" min="0" name="flood_module_clearance_m" required>
+            <small>Lowest module edge above the ground with the pile at the reference height.</small>
+          </label>
+          <label class="field"><span>Freeboard above the flood level (m)</span>
+            <input type="number" step="any" min="0" name="flood_freeboard_m" required>
+            <small>Required gap between the lowest module edge and the flood level.</small>
           </label>
         </div>
+        <p class="ink2" id="flood-rule" style="margin-top:10px"></p>
       </div>
       <div class="card">
         <div class="card-head"><h2>Set-out</h2><span class="muted">New pile positions after optimisation.</span></div>
