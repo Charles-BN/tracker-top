@@ -752,6 +752,7 @@ renderers.map = async () => {
     $('#m2-block').addEventListener('change', (e) => map.setBlock(e.target.value));
     $('#m2-lines').addEventListener('change', (e) => map.setOptions({ lines: e.target.checked }));
     $('#m2-labels').addEventListener('change', (e) => map.setOptions({ labels: e.target.checked }));
+    $('#m2-outlines').addEventListener('change', (e) => map.setOptions({ outlines: e.target.checked }));
     $('#m2-in').addEventListener('click', () => map.zoom(1.6));
     $('#m2-out').addEventListener('click', () => map.zoom(1 / 1.6));
     $('#m2-fit').addEventListener('click', () => { $('#m2-block').value = ''; map.setBlock(''); });
@@ -773,6 +774,11 @@ renderers.map = async () => {
   $('#v3-trackers').innerHTML = state.trackers.map((t) => `<option value="${esc(t.tracker)}">`).join('');
   if (!state.piles.id.length) { $('#m2-legend').innerHTML = '<span class="muted">No piles yet: import the master pile list.</span>'; return; }
   if (map.state !== state || map.summary !== sum) map.setData(state, sum);
+  // Outlines depend only on the master list: fetched again when it grows.
+  if (cache.outlinesFor !== sum.summary.piles) {
+    cache.outlinesFor = sum.summary.piles;
+    map.setOutlines(await api('GET', 'api/blocks/outlines'));
+  }
 };
 
 // ---------------------------------------------------------------- history

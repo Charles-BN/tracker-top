@@ -197,7 +197,9 @@ The **ArcGIS** button downloads a GeoPackage (`.gpkg`, OGC standard) with two la
   when not optimised yet), with every attribute: IDs, tracker type, pile type and colour, design and
   set-out coordinates and shift, ground elevation and its source, survey offset, flood value /
   level / minimum top, cut/fill, ToP, reveal, angle change, tracker status;
-- `trackers`: 3D lines through the pile tops, with status, largest angle and cut/fill, flood counts.
+- `trackers`: 3D lines through the pile tops, with status, largest angle and cut/fill, flood counts;
+- `blocks`: the outline of each block (polygon), with its number of piles, trackers and surveyed
+  piles.
 
 The coordinate system is **GDA2020 / MGA zone 56 (EPSG:7856)** by default; another one can be set in
 **Settings → ArcGIS export** (EPSG code). Then:
@@ -324,7 +326,10 @@ The **Map** tab draws every pile in plan (design positions, north up), coloured 
   than LIDAR, red: higher);
 - **Installers' file** by block: sent, complete but not sent yet, not complete.
 
-The legend gives counts and percentages; click a line to hide or show it. Drag to move, scroll or
+Each **block is outlined**: one line around all its piles, about 2 m outside the outer ones,
+following the block's shape; a block crossed by an access road gets one line around both parts
+(*Block outlines* turns them off). The legend gives counts and percentages; click a line to hide
+or show it. Drag to move, scroll or
 pinch to zoom, choose a block to zoom on it (the others fade), or type a tracker or pile ID. Click
 a pile for its details (both ground values, top, reveal, set-out), with links to the Results and
 the 3D view. *Save as image* downloads the map with its legend as a PNG.
@@ -419,6 +424,9 @@ docs/             how the code works
   coordinate on a whole centimetre; largest angle change 0.70°, reveals 1.20–1.60 m, no tracker
   non-compliant; largest span-length difference from the rounded set-out 9.95 mm. 300 random
   trackers in the tests: every limit holds after rounding.
+- Block outlines on the project master file: 41 blocks (the pile IDs' `PXX` agree with the Block
+  column for all 36,913 piles), one line each, every pile inside its own block's line, computed in
+  0.3 s; the `blocks` layer reads back with GDAL as 41 polygons in EPSG:7856.
 - 2D map with the project master file in the desktop program and the browser version: coverage,
   survey date, status, reveal, survey − LIDAR and installers' modes, block zoom, pile details,
   image export; no errors.
