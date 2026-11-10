@@ -46,16 +46,20 @@ pub fn block_outlines(state: &State) -> Vec<Outline> {
         .map(|(block, trackers)| Outline {
             block: block.to_string(),
             piles: trackers.iter().map(Vec::len).sum(),
-            rings: outline(&trackers).into_iter().collect(),
+            rings: outline(&trackers),
         })
         .collect();
     out.sort_by_key(|o| natural_key(&o.block));
     out
 }
 
-/// The line around a block's trackers (each a list of pile positions).
-pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Option<Vec<(f64, f64)>> {
-    let first = *trackers.iter().find(|t| !t.is_empty())?.first()?;
+/// The lines around a block's trackers (each a list of pile positions): one,
+/// or one per part when the block is in parts side by side, with an empty
+/// stretch (often another block) between them.
+pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
+    let Some(first) = trackers.iter().find_map(|t| t.first().copied()) else {
+        return Vec::new();
+    };
     // Direction of the trackers: the median of their first-to-last bearings.
     let mut angles: Vec<f64> = trackers
         .iter()
@@ -128,7 +132,40 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Option<Vec<(f64, f64)>> {
     let pitch = gaps.get(gaps.len() / 2).copied().unwrap_or(2.0 * MARGIN);
     let side = (pitch / 2.0).max(MARGIN);
 
-    // Neighbouring strips must overlap, or the line would pinch to nothing.
+    // Parts: a new one starts after a gap of more than one empty row, or
+    // where neighbouring columns do not overlap along the track. The line
+    // never bridges those: the gap may hold another block.
+    let mut parts: Vec<Vec<(f64, f64, f64)>> = Vec::new();
+    for c in cols {
+        match parts
+            .last_mut()
+            .and_then(|p| p.last().copied().map(|l| (p, l)))
+        {
+            Some((p, last)) if c.0 - last.0 <= 1.6 * pitch && last.2 > c.1 && c.2 > last.1 => {
+                p.push(c)
+            }
+            _ => parts.push(vec![c]),
+        }
+    }
+    parts
+        .into_iter()
+        .map(|mut cols| {
+            ring_around(&mut cols, side)
+                .into_iter()
+                .map(|p| {
+                    let (x, y) = to_xy(p);
+                    ((x * 100.0).round() / 100.0, (y * 100.0).round() / 100.0)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The ring (along / across the track) around neighbouring columns
+/// (across-track position, low end, high end).
+fn ring_around(cols: &mut [(f64, f64, f64)], side: f64) -> Vec<(f64, f64)> {
+    // Neighbouring strips must overlap by 1 m at least, or the line would
+    // pinch to nothing.
     for i in 1..cols.len() {
         let (a, b) = (cols[i - 1], cols[i]);
         if a.2 < b.1 + 1.0 {
@@ -141,9 +178,9 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Option<Vec<(f64, f64)>> {
 
     // Fill notches one or two columns wide, then even out ends that differ by
     // less than SQUARE; both only move the line outwards.
-    fill_notches(&mut cols);
-    square_off(&mut cols, |c| c.2, |c, v| c.2 = v, true);
-    square_off(&mut cols, |c| c.1, |c, v| c.1 = v, false);
+    fill_notches(cols);
+    square_off(cols, |c| c.2, |c, v| c.2 = v, true);
+    square_off(cols, |c| c.1, |c, v| c.1 = v, false);
 
     // Strip edges across the track.
     let n = cols.len();
@@ -178,15 +215,7 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Option<Vec<(f64, f64)>> {
         }
     }
     ring.push(ring[0]);
-    let ring = drop_straight(&ring);
-    Some(
-        ring.into_iter()
-            .map(|p| {
-                let (x, y) = to_xy(p);
-                ((x * 100.0).round() / 100.0, (y * 100.0).round() / 100.0)
-            })
-            .collect(),
-    )
+    drop_straight(&ring)
 }
 
 /// A column (or two side by side) shorter than the columns on both sides
@@ -321,7 +350,9 @@ mod tests {
         let wobble = |i: usize| [0.0, 1.2, -0.8, 1.5, 0.3][i % 5];
         let mut t = trackers(305_000.0, 10, |i| 6_428_000.0 + wobble(i), 30);
         t.extend(trackers(305_054.0, 10, |i| 6_428_000.0 + wobble(i), 15));
-        let r = outline(&t).unwrap();
+        let rings = outline(&t);
+        assert_eq!(rings.len(), 1);
+        let r = &rings[0];
         assert_eq!(r.first(), r.last());
         assert!(axis_aligned(&r), "{r:?}");
         assert_eq!(r.len() - 1, 6, "an L has 6 corners: {r:?}");
@@ -339,12 +370,14 @@ mod tests {
     fn one_line_across_a_road_and_none_for_nothing() {
         let mut t = trackers(1000.0, 6, |_| 1000.0, 10);
         t.extend(trackers(1000.0, 6, |_| 1107.0, 10)); // 35 m road between
-        let r = outline(&t).unwrap();
+        let rings = outline(&t);
+        assert_eq!(rings.len(), 1);
+        let r = &rings[0];
         assert!(axis_aligned(&r));
         assert_eq!(r.len() - 1, 4, "a rectangle: {r:?}");
         assert!(t.iter().flatten().all(|&p| inside(&r, p)));
-        assert!(outline(&[]).is_none());
-        let single = outline(&[vec![(5.0, 5.0)]]).unwrap();
+        assert!(outline(&[]).is_empty());
+        let single = outline(&[vec![(5.0, 5.0)]]).remove(0);
         assert!(inside(&single, (5.0, 5.0)));
     }
 
@@ -356,7 +389,9 @@ mod tests {
             .into_iter()
             .map(|tr| tr.into_iter().map(rot).collect())
             .collect();
-        let r = outline(&t).unwrap();
+        let rings = outline(&t);
+        assert_eq!(rings.len(), 1);
+        let r = &rings[0];
         // Two halves offset along the track: a step at each end, 8 corners.
         assert_eq!(r.len() - 1, 8, "{r:?}");
         assert!(t.iter().flatten().all(|&p| inside(&r, p)));
@@ -366,5 +401,29 @@ mod tests {
             let k = ang / std::f64::consts::FRAC_PI_2;
             assert!((k - k.round()).abs() < 1e-3, "{ang}");
         }
+    }
+
+    #[test]
+    fn a_block_around_another_one_is_not_bridged_over_it() {
+        // Block 9 of the project: a west part, then four columns of block 8,
+        // then a southern part of block 9 further east.
+        let mut nine = trackers(0.0, 12, |_| 0.0, 17);
+        nine.extend(trackers(81.0, 10, |_| -57.0, 5));
+        let eight = trackers(64.8, 4, |_| 0.0, 17);
+        let rings = outline(&nine);
+        assert_eq!(rings.len(), 2, "{rings:?}");
+        assert!(
+            nine.iter()
+                .flatten()
+                .all(|&p| rings.iter().any(|r| inside(r, p)))
+        );
+        assert!(
+            eight
+                .iter()
+                .flatten()
+                .all(|&p| rings.iter().all(|r| !inside(r, p))),
+            "no pile of the other block inside"
+        );
+        assert!(rings.iter().all(|r| axis_aligned(r)));
     }
 }
