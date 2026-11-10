@@ -8,8 +8,8 @@
 // ramp with a grey midpoint, status colours only for states.
 
 const PAL = {
-  light: { s1: '#2a78d6', s2: '#eb6834', other: '#898781', dim: '#d6d5cf', mid: '#e1e0d9', good: '#0ca30c' },
-  dark: { s1: '#3987e5', s2: '#d95926', other: '#898781', dim: '#383835', mid: '#383835', good: '#0ca30c' },
+  light: { s1: '#2a78d6', s2: '#eb6834', s3: '#1baf7a', other: '#898781', dim: '#a9a8a1', mid: '#c3c2b7', good: '#0ca30c' },
+  dark: { s1: '#3987e5', s2: '#d95926', s3: '#199e70', other: '#898781', dim: '#6b6a65', mid: '#52514e', good: '#0ca30c' },
 };
 const BLUE = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b'];
 const DIV_NEG = ['#184f95', '#2a78d6', '#86b6ef'];
@@ -158,21 +158,21 @@ export class Map2D {
     if (this.mode === 'coverage') {
       classes = [
         { label: 'Surveyed', color: pal.s1 },
-        { label: 'Not surveyed (LIDAR / design ground)', color: pal.other },
-        { label: 'No elevation', color: pal.s2 },
+        { label: 'Not surveyed (LIDAR / design ground)', color: pal.s2 },
+        { label: 'No elevation', color: pal.s3 },
       ];
       for (let i = 0; i < n; i++) cls[i] = p.zs[i] != null ? 0 : p.zl[i] != null || p.z[i] != null ? 1 : 2;
     } else if (this.mode === 'date') {
       const today = Math.floor(Date.now() / 86400000);
       // One hue, the most recent the most visible: darkest on a light
       // surface, lightest on a dark one.
-      const steps = dark ? [BLUE[0], BLUE[2], BLUE[3], BLUE[5]] : [BLUE[6], BLUE[4], BLUE[2], BLUE[0]];
+      const steps = dark ? [BLUE[0], BLUE[1], BLUE[3], BLUE[4]] : [BLUE[6], BLUE[5], BLUE[3], BLUE[2]];
       classes = [
         { label: 'Today', color: steps[0] },
         { label: 'Last 7 days', color: steps[1] },
         { label: 'Last 30 days', color: steps[2] },
         { label: 'Earlier', color: steps[3] },
-        { label: 'Not surveyed', color: pal.dim },
+        { label: 'Not surveyed', color: pal.s2 },
       ];
       for (let i = 0; i < n; i++) {
         if (p.zs[i] == null) { cls[i] = 4; continue; }
@@ -468,7 +468,7 @@ export class Map2D {
 
   /** Pile dot radius (px): grows with the zoom, up to a readable size. */
   radius() {
-    return Math.min(7, Math.max(1.1, 0.9 * this.view.scale));
+    return Math.min(9, Math.max(1.8, 1.3 * this.view.scale));
   }
 
   pileAt(sx, sy) {

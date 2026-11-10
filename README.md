@@ -326,9 +326,12 @@ The **Map** tab draws every pile in plan (design positions, north up), coloured 
   than LIDAR, red: higher);
 - **Installers' file** by block: sent, complete but not sent yet, not complete.
 
-Each **block is outlined**: one line around all its piles, about 2 m outside the outer ones,
-following the block's shape; a block crossed by an access road gets one line around both parts
-(*Block outlines* turns them off). The legend gives counts and percentages; click a line to hide
+Each **block is outlined**: one line around all its piles, made only of straight segments along
+the trackers (north-south) and across them (east-west), 2 m beyond the end piles and half a row
+spacing beside the outer rows. Tracker ends within 3 m of each other are squared off into one
+straight line, and notches one or two trackers wide are filled, always outwards, so the line
+steps only where the trackers really do; a block crossed by an access road gets one line around
+both parts (*Block outlines* turns them off). The legend gives counts and percentages; click a line to hide
 or show it. Drag to move, scroll or
 pinch to zoom, choose a block to zoom on it (the others fade), or type a tracker or pile ID. Click
 a pile for its details (both ground values, top, reveal, set-out), with links to the Results and
@@ -425,8 +428,9 @@ docs/             how the code works
   non-compliant; largest span-length difference from the rounded set-out 9.95 mm. 300 random
   trackers in the tests: every limit holds after rounding.
 - Block outlines on the project master file: 41 blocks (the pile IDs' `PXX` agree with the Block
-  column for all 36,913 piles), one line each, every pile inside its own block's line, computed in
-  0.3 s; the `blocks` layer reads back with GDAL as 41 polygons in EPSG:7856.
+  column for all 36,913 piles), one line each, only north-south and east-west segments, every pile
+  inside its own block's line (median 16 corners; 104 for block 29, which runs diagonally across
+  the site); the `blocks` layer reads back with GDAL as 41 polygons in EPSG:7856.
 - 2D map with the project master file in the desktop program and the browser version: coverage,
   survey date, status, reveal, survey − LIDAR and installers' modes, block zoom, pile details,
   image export; no errors.
