@@ -331,7 +331,9 @@ the trackers (north-south) and across them (east-west), 2 m beyond the end piles
 spacing beside the outer rows. Tracker ends within 3 m of each other are squared off into one
 straight line, and notches one or two trackers wide are filled, always outwards, so the line
 steps only where the trackers really do; a block crossed by an access road gets one line around
-both parts (*Block outlines* turns them off). The legend gives counts and percentages; click a line to hide
+both parts. A block in parts side by side with an empty stretch between them (another block, as
+block 8 between the two parts of block 9) gets one line per part: a line never crosses another
+block. (*Block outlines* turns them off.) The legend gives counts and percentages; click a line to hide
 or show it. Drag to move, scroll or
 pinch to zoom, choose a block to zoom on it (the others fade), or type a tracker or pile ID. Click
 a pile for its details (both ground values, top, reveal, set-out), with links to the Results and
@@ -429,8 +431,8 @@ docs/             how the code works
   trackers in the tests: every limit holds after rounding.
 - Block outlines on the project master file: 41 blocks (the pile IDs' `PXX` agree with the Block
   column for all 36,913 piles), one line each, only north-south and east-west segments, every pile
-  inside its own block's line (median 16 corners; 104 for block 29, which runs diagonally across
-  the site); the `blocks` layer reads back with GDAL as 41 polygons in EPSG:7856.
+  inside its own block's line and no pile of another block inside it (median 16 corners; 104 for
+  block 29, which runs diagonally across the site; block 9 in two parts around block 8); the `blocks` layer reads back with GDAL as 41 polygons in EPSG:7856.
 - 2D map with the project master file in the desktop program and the browser version: coverage,
   survey date, status, reveal, survey − LIDAR and installers' modes, block zoom, pile details,
   image export; no errors.
