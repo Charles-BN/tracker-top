@@ -1120,12 +1120,12 @@ impl Store {
             // settings ask for, and never take one for the other.
             let kind_of = |c: usize| {
                 let h = norm_header(&table.headers[c]);
-                if ["depth", "hauteur", "profondeur", "height"]
+                if ["dept", "hauteur", "profondeur", "height"]
                     .iter()
                     .any(|k| h.contains(k))
                 {
                     Some(FloodMode::Depth)
-                } else if ["level", "elevation", "niveau", "cote", "phe", "wse", "z"]
+                } else if ["leve", "elev", "niveau", "cote", "phe", "wse", "z"]
                     .iter()
                     .any(|k| h.contains(k))
                 {

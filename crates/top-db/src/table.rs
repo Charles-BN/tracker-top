@@ -152,6 +152,10 @@ impl Col {
                 "flood",
                 "flooddepth",
                 "floodlevel",
+                // Names cut to 10 characters by GIS shapefile exports.
+                "flooddept",
+                "floodleve",
+                "floodelev",
                 "floodelevation",
                 "floodheight",
                 "floodz",
