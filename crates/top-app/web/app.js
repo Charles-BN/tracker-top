@@ -1056,7 +1056,10 @@ renderers.settings = async () => {
   $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, settings);
   const setFlood = (v) => {
     $('[name="flood_mode"]').value = v.flood_mode;
-    $('[name="flood_clearance_m"]').value = v.flood_clearance_m;
+    $('[name="flood_pile_height_m"]').value = v.flood_pile_height_m;
+    $('[name="flood_module_clearance_m"]').value = v.flood_module_clearance_m;
+    $('[name="flood_freeboard_m"]').value = v.flood_freeboard_m;
+    floodRule();
     $('[name="epsg"]').value = v.epsg ?? '';
     $('[name="fixed_spans"]').checked = !!v.fixed_spans;
     $('[name="shift_warn_m"]').value = v.shift_warn_m;
@@ -1091,7 +1094,7 @@ $('#settings-form').addEventListener('submit', async (e) => {
   const settings = {};
   for (const [k] of [...OPT_FIELDS, ...MATCH_FIELDS]) settings[k] = Number($(`[name="${k}"]`).value);
   settings.flood_mode = $('[name="flood_mode"]').value;
-  settings.flood_clearance_m = Number($('[name="flood_clearance_m"]').value);
+  for (const k of ['flood_pile_height_m', 'flood_module_clearance_m', 'flood_freeboard_m']) settings[k] = Number($(`[name="${k}"]`).value);
   const epsg = $('[name="epsg"]').value.trim();
   settings.epsg = epsg ? Number(epsg) : null;
   settings.fixed_spans = $('[name="fixed_spans"]').checked;
@@ -1137,6 +1140,17 @@ async function checkForUpdate() {
     document.body.prepend(bar);
   } catch { /* offline: try again later */ }
 }
+
+/** The flood rule in words, from the three flood inputs. */
+function floodRule() {
+  const n = (k) => Number($(`[name="${k}"]`).value);
+  const h = n('flood_pile_height_m'), c = n('flood_module_clearance_m'), f = n('flood_freeboard_m');
+  if (![h, c, f].every(Number.isFinite)) return;
+  const clear = f + h - c, free = c - f;
+  const level = $('[name="flood_mode"]').value === 'elevation';
+  $('#flood-rule').innerHTML = `Rule: <b>top of pile ≥ flood ${level ? 'level' : 'water level (ground + depth)'} + ${clear.toFixed(3)} m</b> (${f.toFixed(2)} m freeboard + ${(h - c).toFixed(3)} m from the top of pile to the lowest module edge). With a ${h.toFixed(3)} m pile, water up to ${free.toFixed(2)} m deep needs no raise; deeper, the pile is raised by depth − ${free.toFixed(2)} m (e.g. 0.45 m of water: +${Math.max(0, 0.45 - free).toFixed(2)} m, pile ${(h + Math.max(0, 0.45 - free)).toFixed(3)} m). The optimiser raises a pile only when its top would otherwise be lower.`;
+}
+['flood_mode', 'flood_pile_height_m', 'flood_module_clearance_m', 'flood_freeboard_m'].forEach((k) => $(`[name="${k}"]`).addEventListener('input', floodRule));
 
 // ---------------------------------------------------------------- start
 

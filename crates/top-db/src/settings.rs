@@ -42,11 +42,19 @@ pub struct Settings {
     /// Warn when a new elevation differs from the previous one by more than this (m).
     pub jump_warn_m: f64,
 
-    /// How flood values are read.
+    /// How flood values are read: water levels (default; independent of the
+    /// ground, which moves away from the LIDAR the flood study used) or depths.
     pub flood_mode: FloodMode,
-    /// Required height of the top of pile above the flood water level (m).
-    /// The lowest allowed top of a pile is `water level + flood_clearance_m`.
-    pub flood_clearance_m: f64,
+    /// Flood rule: at the reference pile height (m above ground) the lowest
+    /// module edge is `flood_module_clearance_m` above the ground, and it must
+    /// stay `flood_freeboard_m` above the flood level. So the top of a pile
+    /// must be at least flood level + freeboard + (pile height - module
+    /// clearance): with 1.075, 0.30 and 0.10, flood level + 0.875 m. Piles
+    /// rise only where the water is deeper than module clearance - freeboard
+    /// (0.20 m) below that reference height.
+    pub flood_pile_height_m: f64,
+    pub flood_module_clearance_m: f64,
+    pub flood_freeboard_m: f64,
 
     /// Coordinate system of Easting/Northing (EPSG code), written into the
     /// GeoPackage export for ArcGIS. Default 7856, GDA2020 / MGA zone 56.
@@ -87,8 +95,10 @@ impl Default for Settings {
             offset_warn_m: 0.10,
             offset_reject_m: 1.0,
             jump_warn_m: 0.30,
-            flood_mode: FloodMode::Depth,
-            flood_clearance_m: 0.0,
+            flood_mode: FloodMode::Elevation,
+            flood_pile_height_m: 1.075,
+            flood_module_clearance_m: 0.30,
+            flood_freeboard_m: 0.10,
             epsg: Some(7856),
             fixed_spans: true,
             shift_warn_m: 0.10,
@@ -139,7 +149,9 @@ impl Settings {
             "max_cut_fill": self.max_cut_fill,
             "grading_threshold": self.grading_threshold,
             "flood_mode": self.flood_mode,
-            "flood_clearance_m": self.flood_clearance_m,
+            "flood_pile_height_m": self.flood_pile_height_m,
+            "flood_module_clearance_m": self.flood_module_clearance_m,
+            "flood_freeboard_m": self.flood_freeboard_m,
             "fixed_spans": self.fixed_spans,
             "round_step": self.round_step,
             // Bumped when the calculation itself changes, so results are redone.
@@ -158,10 +170,16 @@ impl Settings {
         })
     }
 
-    /// Lowest allowed top of pile: flood water level + clearance.
+    /// Height (m) the top of a pile must keep above the flood level: the
+    /// freeboard, plus the drop from the top of pile to the lowest module edge.
+    pub fn flood_clearance(&self) -> f64 {
+        self.flood_freeboard_m + self.flood_pile_height_m - self.flood_module_clearance_m
+    }
+
+    /// Lowest allowed top of pile: flood water level + `flood_clearance()`.
     pub fn min_top(&self, ground: f64, flood: Option<f64>) -> Option<f64> {
         self.flood_water_level(ground, flood)
-            .map(|w| w + self.flood_clearance_m)
+            .map(|w| w + self.flood_clearance())
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -182,8 +200,19 @@ impl Settings {
         if !(self.round_step.is_finite() && (0.0..=0.05).contains(&self.round_step)) {
             return Err("round_step must be between 0 and 0.05 m (0.01 = centimetre)".into());
         }
-        if !self.flood_clearance_m.is_finite() || self.flood_clearance_m.abs() > 20.0 {
-            return Err("flood_clearance_m must be a number between -20 and 20".into());
+        for (name, v) in [
+            ("flood_pile_height_m", self.flood_pile_height_m),
+            ("flood_module_clearance_m", self.flood_module_clearance_m),
+            ("flood_freeboard_m", self.flood_freeboard_m),
+        ] {
+            if !(v.is_finite() && (0.0..=10.0).contains(&v)) {
+                return Err(format!("{name} must be a number between 0 and 10 m"));
+            }
+        }
+        if self.flood_module_clearance_m > self.flood_pile_height_m {
+            return Err(
+                "the module clearance cannot exceed the pile height it is measured at".into(),
+            );
         }
         if self.epsg.is_some_and(|c| !(1024..=999_999).contains(&c)) {
             return Err(
