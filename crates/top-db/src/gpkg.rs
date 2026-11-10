@@ -177,6 +177,26 @@ fn point_z(srs_id: i32, x: f64, y: f64, z: f64) -> Vec<u8> {
     b
 }
 
+/// 2D multipolygon, one ring per polygon (block outlines).
+fn multipolygon(srs_id: i32, rings: &[Vec<(f64, f64)>]) -> Vec<u8> {
+    let mut b = vec![b'G', b'P', 0, 0b0000_0001];
+    b.extend_from_slice(&srs_id.to_le_bytes());
+    b.push(1);
+    b.extend_from_slice(&6u32.to_le_bytes());
+    b.extend_from_slice(&(rings.len() as u32).to_le_bytes());
+    for ring in rings {
+        b.push(1);
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+        for &(x, y) in ring {
+            b.extend_from_slice(&x.to_le_bytes());
+            b.extend_from_slice(&y.to_le_bytes());
+        }
+    }
+    b
+}
+
 fn line_z(srs_id: i32, pts: &[(f64, f64, f64)]) -> Vec<u8> {
     let mut b = gp_header(srs_id);
     b.push(1);
@@ -286,18 +306,27 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
         (min_x, min_y, max_x, max_y) = (0.0, 0.0, 0.0, 0.0);
     }
 
-    for (table, kind, columns, desc) in [
+    for (table, kind, columns, desc, z) in [
         (
             "piles",
             "POINT",
             PILE_COLUMNS,
             "Piles at their top of pile (Z), with ground, survey, flood and optimisation results",
+            1,
         ),
         (
             "trackers",
             "LINESTRING",
             TRACKER_COLUMNS,
             "Trackers through their pile tops (Z), with status, largest angle and cut/fill",
+            1,
+        ),
+        (
+            "blocks",
+            "MULTIPOLYGON",
+            "block TEXT, piles INTEGER, trackers INTEGER, surveyed INTEGER",
+            "Outline of each block, about 2 m outside its outer piles",
+            0,
         ),
     ] {
         tx.execute_batch(&format!(
@@ -309,8 +338,8 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
             params![table, desc, stamp, min_x, min_y, max_x, max_y, srs_id],
         )?;
         tx.execute(
-            "INSERT INTO gpkg_geometry_columns VALUES (?1, 'geom', ?2, ?3, 1, 0)",
-            params![table, kind, srs_id],
+            "INSERT INTO gpkg_geometry_columns VALUES (?1, 'geom', ?2, ?3, ?4, 0)",
+            params![table, kind, srs_id, z],
         )?;
     }
 
@@ -400,6 +429,23 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
                 t.n_flood_raised as i64,
                 t.run_id,
                 t.run_at,
+            ])?;
+        }
+    }
+    {
+        let mut ins = tx.prepare(
+            "INSERT INTO blocks (geom, block, piles, trackers, surveyed) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for o in crate::outline::block_outlines(state) {
+            let ts = state.trackers.iter().filter(|t| t.block == o.block);
+            let (trackers, surveyed) =
+                ts.fold((0i64, 0i64), |(n, s), t| (n + 1, s + t.n_survey as i64));
+            ins.execute(params![
+                multipolygon(srs_id, &o.rings),
+                o.block,
+                o.piles as i64,
+                trackers,
+                surveyed
             ])?;
         }
     }

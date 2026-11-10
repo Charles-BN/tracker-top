@@ -136,6 +136,7 @@ flowchart LR
 | `crates/top-db/src/export.rs` | Excel and CSV exports, export columns and profiles. |
 | `crates/top-db/src/gpkg.rs` | GeoPackage export for ArcGIS / QGIS. |
 | `crates/top-db/src/blocks.rs` | Which blocks are complete; the installers' files. |
+| `crates/top-db/src/outline.rs` | The line around each block (map, ArcGIS export): grid, distance transform, closing, edge tracing. |
 | `crates/top-db/src/sync.rs` | Sharing one database between computers: revisions, merging. |
 | `crates/top-db/src/api.rs` | The request handler shared by the desktop and browser versions. |
 | `crates/top-app/src/main.rs` | Start-up of the desktop program (arguments, database, web server). |

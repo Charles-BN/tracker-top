@@ -375,6 +375,9 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
             ok(json!({ "profiles": store.export_profiles().map_err(bad)? }))
         }
         ("GET", "blocks") => ok(json!(store.block_status().map_err(bad)?)),
+        ("GET", "blocks/outlines") => ok(json!(crate::outline::block_outlines(
+            &store.state().map_err(bad)?
+        ))),
         ("GET", "export/block.xlsx") => {
             let block = query_param(req.query, "block").unwrap_or_default();
             let (name, bytes) = store.block_workbook(&block).map_err(bad)?;

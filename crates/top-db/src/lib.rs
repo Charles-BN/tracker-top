@@ -21,6 +21,7 @@ pub mod blocks;
 pub mod dates;
 pub mod export;
 pub mod gpkg;
+pub mod outline;
 pub mod report;
 pub mod settings;
 pub mod store;

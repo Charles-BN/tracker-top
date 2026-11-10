@@ -64,7 +64,9 @@ export class Map2D {
     host.appendChild(this.tip);
     this.ctx = this.canvas.getContext('2d');
     this.mode = 'coverage';
-    this.opts = { lines: true, labels: true };
+    this.opts = { lines: true, labels: true, outlines: true };
+    this.outlines = [];
+    this.rawOutlines = [];
     this.hidden = new Set();
     this.selected = -1;
     this.focusBlock = '';
@@ -113,10 +115,23 @@ export class Map2D {
     const first = !this.data;
     this.state = state;
     this.summary = summary;
-    this.data = { n, x, y, grid, blocks, trackerOf };
+    this.data = { n, x, y, grid, blocks, trackerOf, e0, n0 };
+    this.setOutlines(this.rawOutlines);
     this.classify();
     if (first) this.fit();
     else this.draw();
+  }
+
+  /** Block outlines from the program: [{ block, rings: [[[e, n], ...]] }]. */
+  setOutlines(list) {
+    this.rawOutlines = list || [];
+    if (!this.data) return;
+    const { e0, n0 } = this.data;
+    this.outlines = this.rawOutlines.map((o) => ({
+      block: o.block,
+      rings: o.rings.map((r) => r.map(([e, n]) => [e - e0, n - n0])),
+    }));
+    this.draw();
   }
 
   setMode(mode) {
@@ -352,24 +367,28 @@ export class Map2D {
       ctx.globalAlpha = 1;
     }
 
-    // Piles, one batch per colour.
-    const r = this.radius();
-    const round = r >= 2.5;
-    this.classes.forEach((c, k) => {
-      if (this.hidden.has(k) || !this.members[k].length) return;
-      for (const pass of focus ? [false, true] : [true]) {
-        ctx.globalAlpha = pass ? 1 : 0.22;
-        ctx.fillStyle = c.color;
+    this.paintPiles(visible, focus);
+
+    // Block outlines, over the piles (the chosen block's stands out).
+    if (this.opts.outlines && this.outlines.length) {
+      const ink = css('--ink-2') || '#52514e';
+      for (const o of this.outlines) {
+        const chosen = focus && o.block === focus;
+        ctx.strokeStyle = chosen ? css('--ink') || '#0b0b0b' : ink;
+        ctx.globalAlpha = focus && !chosen ? 0.35 : 0.85;
+        ctx.lineWidth = chosen ? 2.5 : 1.5;
         ctx.beginPath();
-        for (const i of this.members[k]) {
-          if (!visible(i) || (focus && (p.block[i] === focus) !== pass)) continue;
-          const [sx, sy] = this.toScreen(x[i], y[i]);
-          if (round) { ctx.moveTo(sx + r, sy); ctx.arc(sx, sy, r, 0, 2 * Math.PI); } else ctx.rect(sx - r, sy - r, 2 * r, 2 * r);
+        for (const ring of o.rings) {
+          ring.forEach(([rx, ry], k) => {
+            const [sx, sy] = this.toScreen(rx, ry);
+            if (k === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+          });
+          ctx.closePath();
         }
-        ctx.fill();
+        ctx.stroke();
       }
-    });
-    ctx.globalAlpha = 1;
+      ctx.globalAlpha = 1;
+    }
 
     // Block labels when zoomed out.
     if (this.opts.labels && v.scale < 2.5) {
@@ -398,7 +417,7 @@ export class Map2D {
       const [x1, y1] = this.toScreen(x[b], y[b]);
       ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
       const [sx, sy] = this.toScreen(x[this.selected], y[this.selected]);
-      ctx.beginPath(); ctx.arc(sx, sy, r + 4, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(sx, sy, this.radius() + 4, 0, 2 * Math.PI); ctx.stroke();
     }
 
     // Scale bar.
@@ -419,6 +438,30 @@ export class Map2D {
     ctx.textBaseline = 'top';
     ctx.font = '600 13px system-ui, sans-serif';
     ctx.fillText('N ↑', 14, 12);
+  }
+
+  /** Piles, one batch per colour (faded outside the chosen block). */
+  paintPiles(visible, focus) {
+    const { ctx } = this;
+    const { x, y } = this.data;
+    const p = this.state.piles;
+    const r = this.radius();
+    const round = r >= 2.5;
+    this.classes.forEach((c, k) => {
+      if (this.hidden.has(k) || !this.members[k].length) return;
+      for (const pass of focus ? [false, true] : [true]) {
+        ctx.globalAlpha = pass ? 1 : 0.22;
+        ctx.fillStyle = c.color;
+        ctx.beginPath();
+        for (const i of this.members[k]) {
+          if (!visible(i) || (focus && (p.block[i] === focus) !== pass)) continue;
+          const [sx, sy] = this.toScreen(x[i], y[i]);
+          if (round) { ctx.moveTo(sx + r, sy); ctx.arc(sx, sy, r, 0, 2 * Math.PI); } else ctx.rect(sx - r, sy - r, 2 * r, 2 * r);
+        }
+        ctx.fill();
+      }
+    });
+    ctx.globalAlpha = 1;
   }
 
   // ------------------------------------------------------------------ pointer
