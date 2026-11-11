@@ -92,7 +92,14 @@ watch folder, database, shared database).
 max / nominal, max angle change between spans, max cut/fill, flood rule). A tracker's profile
 draws the survey ground (solid, a dot per surveyed pile) and the LIDAR ground (dashed), the top
 of pile, the allowed band and the flood level; motor piles are an outlined square marked M (and
-M in the pile table). *Full screen* opens the profile over the whole window with pile numbers
+M in the pile table); each end is labelled with its compass direction (← S, N →).
+
+**Slope warning**: every tracker gets its torque-tube slope, the mean of the absolute slopes of
+its spans between the optimised tops of pile (%). Above *Settings → Tracker & reveal → Warn when
+the torque-tube slope is above* (6 % by default) the tracker is flagged ⚠: Slope column and
+*Steep* filter in Results, tracker details, Overview tile, Excel (*Tube Slope (%)*, *Slope
+Warning*) and the ArcGIS trackers layer. On the project file: 67 trackers above 6 %, the steepest
+8.8 % (block 15). *Full screen* opens the profile over the whole window with pile numbers
 (Esc closes it).
 
 **Ground elevations**: for every pile the *Results* table, the pile details (Map, 3D view) and
@@ -339,7 +346,8 @@ The **Map** tab draws every pile in plan (design positions, north up), coloured 
 - **Survey date**: today, last 7 days, last 30 days, earlier, not surveyed;
 - **Tracker status**, **Reveal** (around the nominal reveal), **Survey − LIDAR** (blue: survey lower
   than LIDAR, red: higher);
-- **Installers' file** by block: sent, complete but not sent yet, not complete.
+- **Installers' file** by block: sent, complete but not sent yet, not complete;
+- **Pile colours** from the master list (one colour per pile type, e.g. RED · SAP-7).
 
 Each **block is outlined**: one line around all its piles, made only of straight segments along
 the trackers (north-south) and across them (east-west), 2 m beyond the end piles and half a row

@@ -389,6 +389,8 @@ fn tracker_cells(t: &TrackerState, dc: usize) -> Vec<Cell> {
         opt(t.span_error.map(|e| e * 1000.0), 3),
         Cell::Num(t.n_flood as f64, 0),
         Cell::Num(t.n_flood_raised as f64, 0),
+        opt(t.tube_slope_pct, 2),
+        Cell::Text(if t.steep { "Yes".into() } else { String::new() }),
         opt(t.run_id.map(|r| r as f64), 0),
         Cell::Text(t.run_at.clone().unwrap_or_default()),
     ]
@@ -480,6 +482,8 @@ pub fn workbook_with(
                     "Span Check (mm)",
                     "Flood Values",
                     "Raised For Flood",
+                    "Tube Slope (%)",
+                    "Slope Warning",
                     "Run",
                     "Run Date",
                 ],

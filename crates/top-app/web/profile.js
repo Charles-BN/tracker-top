@@ -157,6 +157,18 @@ export function renderProfile(container, rows, settings, opts = {}) {
       }
     }
   }
+  // Compass direction of each end of the tracker, from the first and last
+  // piles' coordinates (for a north-south tracker: S on one side, N on the other).
+  const first = rows[0], last = rows[rows.length - 1];
+  if (first && last && first.e != null && last.e != null && (first.e !== last.e || first.n !== last.n)) {
+    const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const bearing = (Math.atan2(last.e - first.e, last.n - first.n) * 180) / Math.PI;
+    const k = Math.round((((bearing % 360) + 360) % 360) / 45) % 8;
+    const yA = H - m.b + 18;
+    el('text', { x: m.l - 6, y: yA, 'text-anchor': 'end', class: 'compass' }, svg).textContent = `← ${names[(k + 4) % 8]}`;
+    el('text', { x: W - m.r, y: yA - 22, 'text-anchor': 'end', class: 'compass' }, svg).textContent = `${names[k]} →`;
+  }
+
   // Full screen: pile numbers (last part of the ID) along the top.
   if (opts.labels) {
     for (const r of rows) {

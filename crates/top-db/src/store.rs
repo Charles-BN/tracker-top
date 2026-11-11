@@ -182,6 +182,11 @@ pub struct TrackerState {
     /// Piles with a flood value, and piles raised by it in the latest result.
     pub n_flood: usize,
     pub n_flood_raised: usize,
+    /// Torque-tube slope: mean of the absolute slopes of the tracker's spans
+    /// between its optimised tops of pile (%); None before a result.
+    pub tube_slope_pct: Option<f64>,
+    /// Above `Settings::slope_warn_pct`.
+    pub steep: bool,
     /// Index of this tracker's first pile in `State::piles`.
     pub first_pile: usize,
 }
@@ -236,6 +241,8 @@ pub struct Summary {
     pub reveal_max: Option<f64>,
     pub tracker_status: BTreeMap<String, usize>,
     pub stale_trackers: usize,
+    /// Trackers whose mean ground slope is above the warning threshold.
+    pub steep_trackers: usize,
     pub imports: usize,
     pub last_survey: Option<ImportRow>,
     pub last_run: Option<RunSummary>,
@@ -2064,6 +2071,27 @@ impl Store {
                 .iter()
                 .filter(|p| floods.contains_key(&p.pile_id))
                 .count();
+            // Torque-tube slope: mean of the absolute slopes of the spans
+            // between the optimised tops of pile.
+            let tops: Option<Vec<f64>> = tp
+                .iter()
+                .map(|p| results.get(&p.pile_id).map(|r| r.top))
+                .collect();
+            let tube_slope_pct = tops.filter(|t| t.len() > 1).map(|tops| {
+                let spans: Vec<f64> = tp
+                    .windows(2)
+                    .zip(tops.windows(2))
+                    .map(|(p, t)| {
+                        let h = (p[1].easting - p[0].easting).hypot(p[1].northing - p[0].northing);
+                        if h > 1e-6 {
+                            ((t[1] - t[0]) / h).abs()
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
+                100.0 * spans.iter().sum::<f64>() / spans.len() as f64
+            });
             let n_flood_raised = tp
                 .iter()
                 .filter(|p| results.get(&p.pile_id).is_some_and(|r| r.min_top_active))
@@ -2089,6 +2117,8 @@ impl Store {
                 anchor_motor: run.and_then(|r| r.anchor_motor),
                 n_flood,
                 n_flood_raised,
+                steep: tube_slope_pct.is_some_and(|g| g > settings.slope_warn_pct),
+                tube_slope_pct,
                 first_pile: range.start,
             });
             for (p, e) in tp.iter().zip(ev) {
@@ -2251,6 +2281,7 @@ impl Store {
             reveal_min: reveals.iter().copied().reduce(f64::min),
             reveal_max: reveals.iter().copied().reduce(f64::max),
             stale_trackers: state.trackers.iter().filter(|t| t.stale).count(),
+            steep_trackers: state.trackers.iter().filter(|t| t.steep).count(),
             tracker_status,
             imports: imports as usize,
             last_survey,
@@ -3160,5 +3191,45 @@ mod tests {
             "{}",
             findings(&rep)
         );
+    }
+
+    #[test]
+    fn steep_trackers_are_flagged() {
+        // T1 on an even 8 % slope: the tube follows it. T2 is flat.
+        let mut s = Store::open_in_memory().unwrap();
+        let mut master = String::from("Pile ID;Tracker;Easting;Northing;Z LIDAR\n");
+        for i in 0..6 {
+            master.push_str(&format!(
+                "P1.{i};T1;0;{};{}\n",
+                i * 8,
+                10.0 + 0.64 * i as f64
+            ));
+            master.push_str(&format!("P2.{i};T2;10;{};10\n", i * 8));
+        }
+        assert!(
+            s.import_file(Kind::Master, "m.csv", master.as_bytes(), None, "t")
+                .unwrap()
+                .accepted
+        );
+        assert_eq!(
+            s.state().unwrap().trackers[0].tube_slope_pct,
+            None,
+            "no result yet"
+        );
+        s.optimize(false, "t", 1).unwrap();
+        let st = s.state().unwrap();
+        let (t1, t2) = (&st.trackers[0], &st.trackers[1]);
+        assert!(
+            (t1.tube_slope_pct.unwrap() - 8.0).abs() < 0.2,
+            "{:?}",
+            t1.tube_slope_pct
+        );
+        assert!(t1.steep && !t2.steep);
+        assert!(t2.tube_slope_pct.unwrap() < 0.2);
+        assert_eq!(s.summary().unwrap().steep_trackers, 1);
+        let mut set = s.settings().unwrap();
+        set.slope_warn_pct = 9.0;
+        s.set_settings(&set).unwrap();
+        assert_eq!(s.summary().unwrap().steep_trackers, 0);
     }
 }

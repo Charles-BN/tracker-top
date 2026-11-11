@@ -232,7 +232,7 @@ const PILE_COLUMNS: &str = "pile_id TEXT, tracker TEXT, block TEXT, section TEXT
 const TRACKER_COLUMNS: &str = "tracker TEXT, block TEXT, section TEXT, tracker_type TEXT, n_piles INTEGER, n_surveyed INTEGER,
     n_lidar INTEGER, n_missing INTEGER, status TEXT, up_to_date INTEGER, max_angle REAL, max_cut_fill REAL,
     fixed_pile TEXT, max_shift REAL, span_error_mm REAL,
-    n_flood INTEGER, n_flood_raised INTEGER, run_id INTEGER, run_at TEXT";
+    n_flood INTEGER, n_flood_raised INTEGER, run_id INTEGER, run_at TEXT, tube_slope_pct REAL, steep INTEGER";
 
 fn up_to_date(t: &TrackerState) -> Option<i64> {
     t.run_id.map(|_| (!t.stale) as i64)
@@ -396,8 +396,9 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
         }
         let mut ins = tx.prepare(
             "INSERT INTO trackers (geom, tracker, block, section, tracker_type, n_piles, n_surveyed, n_lidar, n_missing, status,
-                up_to_date, max_angle, max_cut_fill, fixed_pile, max_shift, span_error_mm, n_flood, n_flood_raised, run_id, run_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                up_to_date, max_angle, max_cut_fill, fixed_pile, max_shift, span_error_mm, n_flood, n_flood_raised, run_id, run_at,
+                tube_slope_pct, steep)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         )?;
         for t in &state.trackers {
             let pts: Vec<(f64, f64, f64)> = state.piles[t.first_pile..t.first_pile + t.n_piles]
@@ -429,6 +430,8 @@ fn write(c: &mut Connection, state: &State, settings: &Settings) -> rusqlite::Re
                 t.n_flood_raised as i64,
                 t.run_id,
                 t.run_at,
+                t.tube_slope_pct,
+                t.steep as i64,
             ])?;
         }
     }

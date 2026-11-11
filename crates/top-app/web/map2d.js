@@ -32,6 +32,7 @@ export const MODES = {
   reveal: 'Reveal',
   diff: 'Survey − LIDAR',
   installers: "Installers' file",
+  colors: 'Pile colours',
 };
 
 function hexRgb(h) {
@@ -184,6 +185,32 @@ export class Map2D {
       classes = keys.map((k) => ({ label: STATUS[k][1], color: STATUS[k][0] }));
       const status = this.state.trackers.map((t) => keys.indexOf(t.status));
       for (let i = 0; i < n; i++) cls[i] = Math.max(0, status[this.data.trackerOf[i]]);
+    } else if (this.mode === 'colors') {
+      // The master list's colour of each pile type ("RED", "LIGHT BLUE"...).
+      const keys = new Map();
+      const probe = document.createElement('canvas').getContext('2d');
+      const cssColor = (name) => {
+        const v = String(name || '').trim().toLowerCase().replace(/\s+/g, '');
+        if (!v) return null;
+        probe.fillStyle = '#010203';
+        probe.fillStyle = v;
+        return probe.fillStyle === '#010203' && v !== '#010203' ? null : probe.fillStyle;
+      };
+      for (let i = 0; i < n; i++) {
+        const c = String(p.color[i] || '').trim().toUpperCase();
+        let k = keys.get(c);
+        if (k === undefined) {
+          k = classes.length;
+          keys.set(c, k);
+          classes.push({ label: c || '(no colour)', color: cssColor(c) || pal.other, types: new Set() });
+        }
+        classes[k].types.add(p.type[i] || '?');
+        cls[i] = k;
+      }
+      for (const c of classes) {
+        c.label = `${c.label} · ${[...c.types].sort().join(', ')}`;
+        delete c.types;
+      }
     } else if (this.mode === 'installers') {
       const inst = new Map((this.summary.installers || []).map((b) => [b.block, b]));
       classes = [
@@ -570,6 +597,7 @@ export class Map2D {
       reveal: p.rev[i] != null ? `reveal ${p.rev[i].toFixed(2)} m` : 'no result',
       diff: p.zs[i] != null && p.zl[i] != null ? `survey − LIDAR ${(p.zs[i] - p.zl[i]).toFixed(2)} m` : 'not surveyed',
       installers: c.label,
+      colors: `${p.type[i] || '–'} · ${p.color[i] || 'no colour'}`,
     }[this.mode];
     this.tip.innerHTML = `<b>${esc(p.id[i])}</b><div class="row"><span>Tracker</span><span>${esc(t.tracker)}</span></div><div class="row"><span>Block</span><span>${esc(p.block[i] || '–')}</span></div><div class="row"><span><span class="sw-dot" style="display:inline-block;background:${c.color}"></span></span><span>${esc(detail)}</span></div>`;
     this.tip.hidden = false;
