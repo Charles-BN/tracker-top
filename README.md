@@ -88,6 +88,13 @@ and installers' file), *Import*, *Results*, **Map** (2D plan, see below), *3D vi
 *Settings* (reveal window, angle limit, rounding, survey-matching tolerances, installers' files,
 watch folder, database, shared database).
 
+**Results**: the top of the tab repeats the design limits from the settings (pile height min /
+max / nominal, max angle change between spans, max cut/fill, flood rule). A tracker's profile
+draws the survey ground (solid, a dot per surveyed pile) and the LIDAR ground (dashed), the top
+of pile, the allowed band and the flood level; motor piles are an outlined square marked M (and
+M in the pile table). *Full screen* opens the profile over the whole window with pile numbers
+(Esc closes it).
+
 **Ground elevations**: for every pile the *Results* table, the pile details (Map, 3D view) and
 the exports show both the latest **survey Z** (with its date) and the **LIDAR Z**, the one in use
 in bold (the survey when there is one), and their difference.
