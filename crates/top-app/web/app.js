@@ -249,6 +249,7 @@ renderers.overview = async () => {
       <div class="tile"><div class="label">LIDAR ground only</div><div class="value">${int(s.piles_lidar_only)}</div><div class="sub">not surveyed yet</div></div>
       <div class="tile"><div class="label">No elevation</div><div class="value">${int(s.piles_no_elevation)}</div><div class="sub">trackers wait for these</div></div>
       <div class="tile"><div class="label">Trackers with a valid ToP</div><div class="value">${int(done)}</div><div class="sub">${pct(done, s.trackers)}% · ${int(st.Graded || 0)} need cut/fill</div></div>
+      <div class="tile" title="Trackers whose torque-tube slope (mean of the absolute span slopes) is above the warning threshold"><div class="label">Steep trackers</div><div class="value">${int(s.steep_trackers)}</div><div class="sub">tube slope above ${cache.summary?.settings?.slope_warn_pct ?? 6}%</div></div>
       <div class="tile"><div class="label">Out of date</div><div class="value">${int(s.stale_trackers)}</div><div class="sub">${s.stale_trackers ? 'click Optimise to update' : 'all results current'}</div></div>
       <div class="tile"><div class="label">Piles with a flood value</div><div class="value">${int(s.piles_with_flood)}</div><div class="sub">${s.piles_with_flood ? `${int(s.piles_flood_raised)} raised above the flood` : 'import them when available'}</div></div>
     </div>
@@ -530,7 +531,7 @@ function trackerRowsFor(state, t) {
   let s = 0;
   for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) {
     if (i > t.first_pile) s += Math.hypot(p.e[i] - p.e[i - 1], p.n[i] - p.n[i - 1]);
-    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i], type: p.type[i] });
+    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i], type: p.type[i], e: p.e[i], n: p.n[i] });
   }
   return rows;
 }
@@ -586,6 +587,7 @@ function renderLimits() {
     item('Nominal', `${fmt(s.reveal_nominal, 2)} m`, 'Target pile height'),
     item('Max angle change between spans', `${fmt(s.max_angle_deg, 2)}°`, 'Largest change of slope between two consecutive spans'),
     item('Max cut/fill', `${fmt(s.max_cut_fill, 2)} m`, 'Cap on earthworks at a pile'),
+    item('Slope warning', `above ${fmt(s.slope_warn_pct, 1)} %`, 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile'),
     item('Flood', `level + ${fmt(s.flood_freeboard_m + s.flood_pile_height_m - s.flood_module_clearance_m, 3)} m`, 'Lowest top of pile where there is a flood value (Settings > Flood)'),
   ].join('') + '<a href="#settings" class="limit-edit">Settings</a>';
 }
@@ -609,18 +611,18 @@ renderers.results = async () => {
 function filteredTrackers() {
   const state = cache.state;
   const q = $('#f-search').value.trim().toLowerCase();
-  const block = $('#f-block').value, status = $('#f-status').value, staleOnly = $('#f-stale').checked, floodOnly = $('#f-flood').checked;
+  const block = $('#f-block').value, status = $('#f-status').value, staleOnly = $('#f-stale').checked, floodOnly = $('#f-flood').checked, steepOnly = $('#f-steep').checked;
   let pileTrackers = null;
   if (q) {
     pileTrackers = new Set();
     state.piles.id.forEach((id, i) => { if (id.toLowerCase().includes(q)) pileTrackers.add(state.piles.tracker[i]); });
   }
   const list = state.trackers.filter((t) =>
-    (!block || t.block === block) && (!status || t.status === status) && (!staleOnly || t.stale) && (!floodOnly || t.n_flood_raised > 0) &&
+    (!block || t.block === block) && (!status || t.status === status) && (!staleOnly || t.stale) && (!floodOnly || t.n_flood_raised > 0) && (!steepOnly || t.steep) &&
     (!q || t.tracker.toLowerCase().includes(q) || pileTrackers.has(t.tracker)));
   const key = {
     tracker: (t) => t.tracker, block: (t) => t.block, n_piles: (t) => t.n_piles, n_survey: (t) => t.n_survey / t.n_piles,
-    status: (t) => STATUS_ORDER.indexOf(t.status), max_angle_deg: (t) => t.max_angle_deg ?? -1, max_cut_fill: (t) => t.max_cut_fill ?? -1, run_at: (t) => t.run_at ?? '',
+    status: (t) => STATUS_ORDER.indexOf(t.status), max_angle_deg: (t) => t.max_angle_deg ?? -1, max_cut_fill: (t) => t.max_cut_fill ?? -1, tube_slope_pct: (t) => t.tube_slope_pct ?? -1, run_at: (t) => t.run_at ?? '',
   }[rs.sort];
   list.sort((a, b) => {
     const ka = key(a), kb = key(b);
@@ -636,16 +638,18 @@ function drawTrackerTable() {
   const cols = [
     ['tracker', 'Tracker', ''], ['block', 'Block', ''], ['n_piles', 'Piles', 'num'], ['n_survey', 'Surveyed', 'num'],
     ['status', 'Status', ''], ['max_angle_deg', 'Angle (°)', 'num', 'Largest angle change between two spans'], ['max_cut_fill', 'Cut/fill (m)', 'num', 'Largest cut or fill at a pile'],
+    ['tube_slope_pct', 'Slope (%)', 'num', 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile'],
   ];
   const head = cols.map(([k, label, cls, tip]) => `<th class="sortable ${cls}" data-sort="${k}"${tip ? ` title="${tip}"` : ''}>${label}${rs.sort === k ? ` <span class="arrow">${rs.dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`).join('');
   const rows = list.slice(0, rs.limit).map((t) => `<tr class="clickable${t.tracker === rs.selected ? ' selected' : ''}" data-t="${esc(t.tracker)}">
       <td>${esc(t.tracker)}</td><td>${esc(t.block)}</td><td class="num">${t.n_piles}</td>
       <td class="num">${t.n_survey}/${t.n_piles}</td>
       <td>${statusBadge(t.status)}${t.stale && t.run_id ? ' <span class="stale" title="Elevations or settings changed since this result">out of date</span>' : ''}</td>
-      <td class="num">${fmt(t.max_angle_deg, 3)}</td><td class="num">${fmt(t.max_cut_fill, dc())}</td></tr>`).join('');
-  const more = list.length > rs.limit ? `<tr><td colspan="7" style="text-align:center"><button class="btn small" id="show-more">Show ${int(Math.min(400, list.length - rs.limit))} more</button></td></tr>` : '';
+      <td class="num">${fmt(t.max_angle_deg, 3)}</td><td class="num">${fmt(t.max_cut_fill, dc())}</td>
+      <td class="num"${t.steep ? ` style="color:var(--warning-text);font-weight:600" title="Above ${cache.summary.settings.slope_warn_pct}%"` : ''}>${t.steep ? '⚠ ' : ''}${fmt(t.tube_slope_pct, 1)}</td></tr>`).join('');
+  const more = list.length > rs.limit ? `<tr><td colspan="8" style="text-align:center"><button class="btn small" id="show-more">Show ${int(Math.min(400, list.length - rs.limit))} more</button></td></tr>` : '';
   const table = $('#tracker-table');
-  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">No tracker matches these filters.</td></tr>'}${more}</tbody>`;
+  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">No tracker matches these filters.</td></tr>'}${more}</tbody>`;
   $$('th[data-sort]', table).forEach((th) => th.addEventListener('click', () => {
     const k = th.dataset.sort;
     rs.dir = rs.sort === k ? -rs.dir : 1;
@@ -661,7 +665,7 @@ function drawTrackerTable() {
   $('#show-more')?.addEventListener('click', () => { rs.limit += 400; drawTrackerTable(); });
 }
 
-['#f-search', '#f-block', '#f-status', '#f-stale', '#f-flood'].forEach((s) => $(s).addEventListener('input', () => { rs.limit = 400; if (cache.state) drawTrackerTable(); }));
+['#f-search', '#f-block', '#f-status', '#f-stale', '#f-flood', '#f-steep'].forEach((s) => $(s).addEventListener('input', () => { rs.limit = 400; if (cache.state) drawTrackerTable(); }));
 
 function renderDetail(t) {
   const state = cache.state, settings = cache.summary.settings;
@@ -703,6 +707,7 @@ function renderDetail(t) {
       <div><span>Largest shift</span><b>${fmt(t.max_shift ?? 0, dc())} m</b></div>
       <div title="Largest difference between a span's length along the tube and its design length, from the (rounded) set-out positions and tops"><span>Span check</span><b>${t.span_error != null && t.span_error <= (settings.round_step || 0) + 0.0005 ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(1)} mm</b></div>` : ''}
       <div><span>Result of</span><b>${esc(t.run_at?.slice(0, 16) ?? '–')}</b></div>
+      <div${t.steep ? ' style="color:var(--warning-text)"' : ''} title="Mean of the absolute slopes of the spans between the tops of pile"><span>Torque-tube slope</span><b>${t.steep ? '⚠ ' : ''}${fmt(t.tube_slope_pct, 2)} %${t.steep ? ` (above ${cache.summary.settings.slope_warn_pct}%)` : ''}</b></div>
       <div><span>Flood values</span><b>${t.n_flood ? `${t.n_flood} of ${t.n_piles} · ${t.n_flood_raised} raised` : 'none'}</b></div>
     </div>
     <div class="profile-tools"><button class="btn small" id="profile-full" title="Show the profile on the whole screen, with pile numbers (Esc to close)">⤢ Full screen</button></div>
@@ -1035,6 +1040,7 @@ const OPT_FIELDS = [
   ['max_angle_deg', 'Max angle change between spans', '°', 'The NX Horizon XTR limit is 0.75°; 0.70° keeps a margin.'],
   ['max_cut_fill', 'Max cut/fill at a pile', 'm', 'Grading is never larger than this.'],
   ['grading_threshold', 'Grading counted above', 'm', 'A tracker needing more cut/fill than this is "Graded".'],
+  ['slope_warn_pct', 'Warn when the torque-tube slope is above', '%', 'Mean of the absolute slopes of a tracker\'s spans, between its tops of pile.'],
   ['round_step', 'Round tops, cut/fill and set-out to', 'm', '0.01 = the centimetre; 0 = exact values. Every limit is checked on the rounded values.'],
 ];
 const MATCH_FIELDS = [

@@ -65,6 +65,9 @@ pub struct Settings {
     pub fixed_spans: bool,
     /// Flag piles whose set-out position moves more than this from design (m).
     pub shift_warn_m: f64,
+    /// Warn on a tracker whose torque-tube slope (mean of the absolute slopes
+    /// of its spans between the tops of pile, %) is above this.
+    pub slope_warn_pct: f64,
     /// Calculated values (tops, cut/fill, set-out positions) are rounded to
     /// this step (m): 0.01 = the centimetre; 0 keeps them exact. The limits
     /// are checked on the rounded values.
@@ -102,6 +105,7 @@ impl Default for Settings {
             epsg: Some(7856),
             fixed_spans: true,
             shift_warn_m: 0.10,
+            slope_warn_pct: 6.0,
             round_step: 0.01,
             auto_export: true,
             auto_export_folder: "For installers".into(),
@@ -190,6 +194,7 @@ impl Settings {
             ("offset_reject_m", self.offset_reject_m),
             ("jump_warn_m", self.jump_warn_m),
             ("shift_warn_m", self.shift_warn_m),
+            ("slope_warn_pct", self.slope_warn_pct),
             ("reveal_nominal", self.reveal_nominal),
         ];
         for (name, v) in pos {
