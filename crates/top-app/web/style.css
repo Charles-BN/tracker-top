@@ -346,3 +346,17 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 .ex-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 @media (max-width: 760px) { .ex-grid { grid-template-columns: 1fr; } }
 .update-bar { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 8px 16px; background: var(--accent-wash); color: var(--ink); border-bottom: 1px solid var(--accent); }
+/* Results: design limits */
+.limits { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: stretch; margin-bottom: 12px; }
+.limit { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 6px 12px; display: flex; flex-direction: column; min-width: 0; }
+.limit span { color: var(--muted); font-size: 12px; }
+.limit b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.limit-edit { align-self: center; font-size: 12.5px; }
+/* Tracker profile: motor piles, full screen */
+.motor-key { width: 11px; height: 11px; border: 2.5px solid var(--s1); border-radius: 2px; background: var(--surface); flex: none; }
+.profile .motor-label { font-weight: 700; fill: var(--ink); }
+.motor-tag { font-size: 10.5px; font-weight: 700; border: 1px solid var(--ink-2); border-radius: 3px; padding: 0 3px; color: var(--ink); }
+.profile-tools { display: flex; justify-content: flex-end; margin-bottom: -4px; }
+.profile-full { position: fixed; inset: 0; z-index: 60; background: var(--surface); display: flex; flex-direction: column; padding: 16px max(16px, env(safe-area-inset-right, 0px)) 16px max(16px, env(safe-area-inset-left, 0px)); }
+.profile-full .pf-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.profile-full .pf-body { flex: 1; min-height: 0; position: relative; }

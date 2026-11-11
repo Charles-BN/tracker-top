@@ -1,4 +1,4 @@
-import { renderProfile } from './profile.js';
+import { renderProfile, isMotorPile } from './profile.js';
 import { createSync, folderAccessSupported } from './sync.js';
 
 const $ = (s, root = document) => root.querySelector(s);
@@ -530,7 +530,7 @@ function trackerRowsFor(state, t) {
   let s = 0;
   for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) {
     if (i > t.first_pile) s += Math.hypot(p.e[i] - p.e[i - 1], p.n[i] - p.n[i - 1]);
-    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i] });
+    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i], type: p.type[i] });
   }
   return rows;
 }
@@ -543,7 +543,56 @@ function fillSelect(sel, values, allLabel, labels = {}) {
 
 const natural = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
 
+/** The tracker's profile over the whole window, with pile numbers. */
+function openProfileFull(t) {
+  const settings = cache.summary.settings;
+  const rows = trackerRowsFor(cache.state, t);
+  const ov = document.createElement('div');
+  ov.className = 'profile-full';
+  ov.setAttribute('role', 'dialog');
+  ov.setAttribute('aria-label', `Profile of ${t.tracker}`);
+  ov.innerHTML = `<div class="pf-head"><h2>${esc(t.tracker)}</h2>${statusBadge(t.status)}
+      <span class="muted">${t.n_piles} piles · ${esc(t.tracker_type || '')} · max angle change ${fmt(t.max_angle_deg, 3)}° · max cut/fill ${fmt(t.max_cut_fill, dc())} m</span>
+      <button class="btn" data-close style="margin-left:auto">Close (Esc)</button></div>
+    <div class="pf-body"></div>`;
+  document.body.appendChild(ov);
+  const body = ov.querySelector('.pf-body');
+  const draw = () => renderProfile(body, rows, settings, { height: Math.max(320, body.clientHeight - 40), labels: true });
+  const close = () => {
+    window.removeEventListener('resize', draw);
+    document.removeEventListener('keydown', onKey);
+    if (document.fullscreenElement === ov) document.exitFullscreen().catch(() => {});
+    ov.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  ov.querySelector('[data-close]').addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  window.addEventListener('resize', draw);
+  ov.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) close(); });
+  // True full screen where the browser allows it; the window-filling view otherwise.
+  ov.requestFullscreen?.().catch(() => {}).finally(draw);
+  draw();
+}
+
+/** The design limits from the settings, at the top of the Results tab. */
+function renderLimits() {
+  const s = cache.summary?.settings;
+  if (!s) return;
+  const lo = s.reveal_nominal + s.delta_min, hi = s.reveal_nominal + s.delta_max;
+  const item = (label, value, tip) => `<div class="limit" title="${esc(tip)}"><span>${label}</span><b>${value}</b></div>`;
+  $('#results-limits').innerHTML = [
+    item('Pile height (reveal) min', `${fmt(lo, 2)} m`, 'Lowest top of pile above the ground (Settings > Tracker & reveal)'),
+    item('Pile height max', `${fmt(hi, 2)} m`, 'Highest top of pile above the ground'),
+    item('Nominal', `${fmt(s.reveal_nominal, 2)} m`, 'Target pile height'),
+    item('Max angle change between spans', `${fmt(s.max_angle_deg, 2)}°`, 'Largest change of slope between two consecutive spans'),
+    item('Max cut/fill', `${fmt(s.max_cut_fill, 2)} m`, 'Cap on earthworks at a pile'),
+    item('Flood', `level + ${fmt(s.flood_freeboard_m + s.flood_pile_height_m - s.flood_module_clearance_m, 3)} m`, 'Lowest top of pile where there is a flood value (Settings > Flood)'),
+  ].join('') + '<a href="#settings" class="limit-edit">Settings</a>';
+}
+
 renderers.results = async () => {
+  await loadSummary();
+  renderLimits();
   const state = await loadState();
   const blocks = [...new Set(state.trackers.map((t) => t.block))].sort(natural);
   fillSelect($('#f-block'), blocks.map((b) => [b, state.trackers.filter((t) => t.block === b).length]), 'All blocks', { '': '(no block)' });
@@ -631,7 +680,7 @@ function renderDetail(t) {
     const used = (k) => (p.zsrc[i] === k ? ' class="num used" title="Ground in use"' : ' class="num muted"');
     const diff = p.zs[i] != null && p.zl[i] != null ? p.zs[i] - p.zl[i] : null;
     return `<tr>
-      <td>${esc(p.id[i])}</td><td><span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}</span></td>
+      <td>${esc(p.id[i])}</td><td><span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}${isMotorPile(p.type[i]) ? ' <span class="motor-tag" title="Motor pile">M</span>' : ''}</span></td>
       <td${used('survey')}>${p.zs[i] == null ? '–' : `<span title="Survey of ${esc(p.zdate[i] ?? '')}">${fmt(p.zs[i])}</span>`}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠</span>` : ''}</td>
       <td${used('lidar')}>${fmt(p.zl[i])}</td>
       <td class="num">${diff == null ? '' : fmt(diff, d)}</td>
@@ -656,11 +705,13 @@ function renderDetail(t) {
       <div><span>Result of</span><b>${esc(t.run_at?.slice(0, 16) ?? '–')}</b></div>
       <div><span>Flood values</span><b>${t.n_flood ? `${t.n_flood} of ${t.n_piles} · ${t.n_flood_raised} raised` : 'none'}</b></div>
     </div>
+    <div class="profile-tools"><button class="btn small" id="profile-full" title="Show the profile on the whole screen, with pile numbers (Esc to close)">⤢ Full screen</button></div>
     <div id="profile"></div>
     <div class="table-wrap" style="margin-top:12px"><table>
       <thead><tr><th>Pile</th><th>Type</th><th class="num" title="Latest field survey (hover for its date). Bold: the ground in use.">Survey Z</th><th class="num" title="LIDAR / design ground. Bold: the ground in use.">LIDAR Z</th><th class="num" title="Survey minus LIDAR (m)">Δ</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num" title="Move along the tracker from the design position (m), to keep the torque-tube spans at their design length. Hover for the set-out coordinates.">Shift</th><th class="num">Reveal</th>${hasFlood ? '<th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th>' : ''}<th class="num">Angle (°)</th></tr></thead>
       <tbody>${piles}</tbody></table></div>`;
   renderProfile($('#profile', el), rows, settings);
+  $('#profile-full').addEventListener('click', () => openProfileFull(t));
   $('#detail-3d').addEventListener('click', async () => {
     await show('view3d');
     if (view?.focusTracker(t.tracker)) $('#v3-find').value = t.tracker;
