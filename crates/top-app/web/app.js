@@ -1,5 +1,6 @@
 import { renderProfile, isMotorPile } from './profile.js';
 import { createSync, folderAccessSupported } from './sync.js';
+import { visibleColumns, headCells, columnsButton } from './columns.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -150,9 +151,7 @@ function updateHeader() {
   if (!s) return;
   $('#btn-gpkg').title = s.settings.epsg
     ? `GeoPackage for ArcGIS / QGIS (EPSG:${s.settings.epsg}): piles and trackers with all results`
-    : 'GeoPackage for ArcGIS / QGIS. Set the coordinate system in Settings > ArcGIS export first.';
-  $('#db-path').textContent = s.summary.db_path;
-  $('#db-path').title = `Database: ${s.summary.db_path}`;
+    : 'GeoPackage for ArcGIS / QGIS. Set the coordinate system in Settings > Outputs > ArcGIS export first.';
   const stale = s.summary.stale_trackers;
   const badge = $('#stale-count');
   badge.hidden = !stale;
@@ -166,6 +165,8 @@ let current = 'overview';
 const renderers = {};
 
 async function show(tab, rerender = false) {
+  let scrollTo = null;
+  if (tab === 'history') { tab = 'import'; scrollTo = '#history-card'; rerender = true; }
   if (!renderers[tab]) tab = 'overview';
   const changed = tab !== current;
   current = tab;
@@ -178,7 +179,14 @@ async function show(tab, rerender = false) {
   if (changed || rerender) {
     try { await renderers[tab](); } catch (e) { toast(e.message, true); }
   }
+  if (scrollTo) $(scrollTo)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
+// Export menu: closes on a choice or a click elsewhere.
+const exportMenu = $('#export-menu');
+document.addEventListener('click', (e) => { if (exportMenu.open && !exportMenu.contains(e.target)) exportMenu.open = false; });
+exportMenu.addEventListener('click', (e) => { if (e.target.closest('[role="menuitem"]')) exportMenu.open = false; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && exportMenu.open) { exportMenu.open = false; exportMenu.querySelector('summary').focus(); } });
 
 $$('.tabs button').forEach((b) => b.addEventListener('click', () => show(b.dataset.tab)));
 window.addEventListener('hashchange', () => show(location.hash.slice(1) || 'overview'));
@@ -230,55 +238,114 @@ renderers.overview = async () => {
   const done = (st.Compliant || 0) + (st.Graded || 0);
   const lastRun = s.last_run;
   const ls = s.last_survey;
-  const blocks = s.blocks.map((b) => `<tr>
-      <td>${esc(b.block || '(none)')}</td>
-      <td class="num">${int(b.trackers)}</td>
-      <td class="num">${int(b.piles)}</td>
-      <td class="bar-cell"><div style="display:flex;align-items:center;gap:8px"><div class="mini-bar" style="flex:1"><span style="width:${pct(b.surveyed, b.piles)}%"></span></div><span class="num" style="width:3.5em">${pct(b.surveyed, b.piles)}%</span></div></td>
-      <td class="bar-cell">${stackBar(b.counts, b.trackers, true)}</td>
-      ${['Compliant', 'Graded', 'NonCompliant', 'AwaitingSurvey'].map((k) => `<td class="num">${int(b.counts[k] || 0)}</td>`).join('')}
-      <td class="num">${b.reveal_mean == null ? '–' : fmt(b.reveal_mean, 3)}</td>
-      <td>${installerCell(inst[b.block])}</td>
-    </tr>`).join('');
-  const events = (watch.events || []).slice(0, 4).map((e) => `<li>${e.accepted ? '<span class="pill ok">✓</span>' : '<span class="pill bad">✕</span>'} <b>${esc(e.file)}</b> <span class="muted">${esc(e.at)}</span><br><span class="ink2">${esc(e.message)}</span></li>`).join('');
+  const settings = cache.summary.settings;
+  const events = (watch.events || []).slice(0, 3).map((e) => `<li>${e.accepted ? '<span class="pill ok">✓</span>' : '<span class="pill bad">✕</span>'} <b>${esc(e.file)}</b> <span class="muted">${esc(e.at)}</span></li>`).join('');
+  const metric = (label, value, sub = '', extra = '') => `<div class="metric"${extra}><span class="m-label">${label}</span><span class="m-value">${value}</span>${sub ? `<span class="m-sub">${sub}</span>` : ''}</div>`;
+  const alert = (go, label, n, sub, tone) => `<button type="button" class="alert-row${n ? ` tone-${tone}` : ''}" data-go="${go}"${n ? '' : ' disabled'}><span class="a-count">${int(n)}</span><span class="a-text"><b>${label}</b><small>${sub}</small></span>${n ? '<span class="a-go" aria-hidden="true">→</span>' : ''}</button>`;
+  const surveyed = pct(s.piles_surveyed, s.piles);
   el.innerHTML = `
-    <div class="tiles">
-      <div class="tile"><div class="label">Piles in master list</div><div class="value">${int(s.piles)}</div><div class="sub">${int(s.trackers)} trackers · ${s.blocks.length} block${s.blocks.length === 1 ? '' : 's'}</div></div>
-      <div class="tile"><div class="label">Piles surveyed</div><div class="value">${int(s.piles_surveyed)}</div><div class="sub">${pct(s.piles_surveyed, s.piles)}% of piles</div></div>
-      <div class="tile" title="Top of pile above the ground elevation in use, over every pile with a result"><div class="label">Average reveal</div><div class="value">${s.reveal_mean == null ? '–' : `${fmt(s.reveal_mean, 3)} m`}</div><div class="sub">${s.reveal_mean == null ? 'no results yet' : `${int(s.piles_with_result)} piles · ${fmt(s.reveal_min, 2)} to ${fmt(s.reveal_max, 2)} m${s.reveal_mean_survey != null && s.reveal_mean_survey !== s.reveal_mean ? ` · surveyed ${fmt(s.reveal_mean_survey, 3)} m` : ''}`}</div></div>
-      <div class="tile"><div class="label">LIDAR ground only</div><div class="value">${int(s.piles_lidar_only)}</div><div class="sub">not surveyed yet</div></div>
-      <div class="tile"><div class="label">No elevation</div><div class="value">${int(s.piles_no_elevation)}</div><div class="sub">trackers wait for these</div></div>
-      <div class="tile"><div class="label">Trackers with a valid ToP</div><div class="value">${int(done)}</div><div class="sub">${pct(done, s.trackers)}% · ${int(st.Graded || 0)} need cut/fill</div></div>
-      <div class="tile" title="Trackers whose torque-tube slope (mean of the absolute span slopes) is above the warning threshold"><div class="label">Steep trackers</div><div class="value">${int(s.steep_trackers)}</div><div class="sub">tube slope above ${cache.summary?.settings?.slope_warn_pct ?? 6}%</div></div>
-      <div class="tile"><div class="label">Out of date</div><div class="value">${int(s.stale_trackers)}</div><div class="sub">${s.stale_trackers ? 'click Optimise to update' : 'all results current'}</div></div>
-      <div class="tile"><div class="label">Piles with a flood value</div><div class="value">${int(s.piles_with_flood)}</div><div class="sub">${s.piles_with_flood ? `${int(s.piles_flood_raised)} raised above the flood` : 'import them when available'}</div></div>
+    <div class="hero card">
+      <div class="hero-main">
+        <div class="eyebrow">Trackers with a valid top of pile</div>
+        <div class="hero-value">${pct(done, s.trackers)}<span>%</span></div>
+        <div class="ink2">${int(done)} of ${int(s.trackers)} trackers · ${int(s.piles)} piles in ${s.blocks.length} block${s.blocks.length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="hero-bar">
+        ${stackBar(st, s.trackers)}
+        <div class="legend">${STATUS_ORDER.filter((k) => st[k]).map((k) => `<span class="item"><span class="sw" style="background:${STATUS_FILL[STATUS[k][0]]}"></span>${esc(STATUS[k][1])} <b>${int(st[k])}</b></span>`).join('')}</div>
+      </div>
     </div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-head"><h2>Trackers by status</h2><span class="muted">${int(s.trackers)} trackers</span></div>
-      ${stackBar(st, s.trackers)}
-      <div class="legend">${STATUS_ORDER.filter((k) => st[k]).map((k) => `<span class="item"><span class="sw" style="background:${STATUS_FILL[STATUS[k][0]]}"></span>${esc(STATUS[k][1])} <b>${int(st[k])}</b></span>`).join('')}</div>
+    <div class="grid cols-3 groups">
+      <div class="card group">
+        <h3>Ground elevations</h3>
+        <div class="progress-line"><div class="mini-bar"><span style="width:${surveyed}%"></span></div><b>${surveyed}%</b></div>
+        <div class="metrics">
+          ${metric('Surveyed', int(s.piles_surveyed), 'piles')}
+          ${metric('LIDAR only', int(s.piles_lidar_only), 'not surveyed yet')}
+          ${s.piles_no_elevation ? metric('No elevation', int(s.piles_no_elevation), 'trackers wait for these') : ''}
+        </div>
+      </div>
+      <div class="card group" title="Top of pile above the ground elevation in use, over every pile with a result">
+        <h3>Reveal</h3>
+        <div class="big-figure">${s.reveal_mean == null ? '–' : fmt(s.reveal_mean, 3)}<span> m average</span></div>
+        <div class="metrics">
+          ${s.reveal_mean == null ? '<p class="muted">No results yet.</p>' : `${metric('Range', `${fmt(s.reveal_min, 2)} – ${fmt(s.reveal_max, 2)} m`, `${int(s.piles_with_result)} piles`)}
+          ${s.reveal_mean_survey != null && s.reveal_mean_survey !== s.reveal_mean ? metric('Surveyed piles', `${fmt(s.reveal_mean_survey, 3)} m`, 'average') : ''}`}
+        </div>
+      </div>
+      <div class="card group">
+        <h3>To look at</h3>
+        <div class="alerts">
+          ${alert('stale', 'Out of date', s.stale_trackers, s.stale_trackers ? 'click Optimise to update' : 'all results current', 'warn')}
+          ${alert('NonCompliant', 'Non-compliant', st.NonCompliant || 0, 'limits cannot be met', 'bad')}
+          ${alert('Graded', 'Need cut/fill', st.Graded || 0, 'graded trackers', 'warn')}
+          ${alert('steep', 'Steep trackers', s.steep_trackers, `tube slope above ${settings?.slope_warn_pct ?? 6}%`, 'warn')}
+          ${s.piles_with_flood ? alert('flood', 'Raised for flood', s.piles_flood_raised, `piles, of ${int(s.piles_with_flood)} with a flood value`, 'info') : ''}
+        </div>
+      </div>
     </div>
     <div class="card">
-      <div class="card-head"><h2>Progress by block</h2></div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Block</th><th class="num">Trackers</th><th class="num">Piles</th><th>Surveyed</th><th>Status</th><th class="num">Compliant</th><th class="num">Graded</th><th class="num">Non-compliant</th><th class="num">Awaiting</th><th class="num" title="Mean reveal of the block's piles with a result">Avg reveal (m)</th><th title="Excel file for the installers, written to the shared folder once the block is complete">Installers' file</th></tr></thead>
-        <tbody>${blocks}</tbody>
-      </table></div>
+      <div class="card-head"><h2>Progress by block</h2><div class="head-tools"><span class="muted">Click a block for its trackers</span><span id="blocks-cols"></span></div></div>
+      <div class="table-wrap"><table id="blocks-table"></table></div>
     </div>
-    <div class="grid cols-3" style="margin-top:16px">
-      <div class="card"><div class="card-head"><h3>Last survey import</h3><a href="#history">History</a></div>
-        ${ls ? `<p><b>${esc(ls.file_name)}</b></p><p class="ink2">Survey of ${esc(ls.survey_date || '–')} · imported ${esc(ls.imported_at)} (${esc(ls.origin)})<br>${int(ls.rows_used)} piles updated, ${int(ls.rows_rejected)} rows skipped</p>` : '<p class="muted">No field survey imported yet.</p>'}
+    <div class="card activity">
+      <div class="act"><div class="act-head"><h3>Last survey import</h3><a href="#history">History</a></div>
+        ${ls ? `<p><b>${esc(ls.file_name)}</b></p><p class="ink2">Survey of ${esc(ls.survey_date || '–')} · imported ${esc(ls.imported_at)}<br>${int(ls.rows_used)} piles updated · ${int(ls.rows_rejected)} skipped</p>` : '<p class="muted">No field survey imported yet.</p>'}
       </div>
-      <div class="card"><div class="card-head"><h3>Last optimisation</h3></div>
+      <div class="act"><div class="act-head"><h3>Last optimisation</h3></div>
         ${lastRun ? `<p class="ink2">${esc(lastRun.created_at)} · ${esc(lastRun.trigger)}</p><p>${esc(runText(lastRun))}</p>` : '<p class="muted">Not run yet.</p>'}
       </div>
-      <div class="card"><div class="card-head"><h3>Shared database</h3><a href="#settings">Settings</a></div><div id="ov-share"></div></div>
-      <div class="card"><div class="card-head"><h3>Watch folder</h3><a href="#settings">Settings</a></div>
-        ${watch_folder ? `<p class="mono" style="word-break:break-all">${esc(watch_folder)}</p><p class="ink2">${watch.error ? `<span style="color:var(--critical-text)">${esc(watch.error)}</span>` : `Last scan ${esc(watch.last_scan || 'pending')}`}</p>${events ? `<ul class="findings">${events}</ul>` : ''}` : '<p class="muted">Off. Set a folder in Settings to import new survey files automatically (for example a Trimble Connect Sync folder).</p>'}
+      <div class="act"><div class="act-head"><h3>Shared database</h3><a href="#settings" data-settings="database">Settings</a></div><div id="ov-share"></div></div>
+      <div class="act"><div class="act-head"><h3>Watch folder</h3><a href="#settings" data-settings="survey">Settings</a></div>
+        ${watch_folder ? `<p class="mono" style="word-break:break-all">${esc(watch_folder)}</p><p class="ink2">${watch.error ? `<span style="color:var(--critical-text)">${esc(watch.error)}</span>` : `Last scan ${esc(watch.last_scan || 'pending')}`}</p>${events ? `<ul class="findings">${events}</ul>` : ''}` : '<p class="muted">Off.</p>'}
       </div>
     </div>`;
+  const drawBlocks = () => {
+    const cols = visibleColumns('blocks', BLOCK_COLS);
+    $('#blocks-table').innerHTML = `<thead><tr>${headCells(cols)}</tr></thead><tbody>${s.blocks.map((b) => `<tr class="clickable" data-block="${esc(b.block)}">${cols.map((c) => `<td class="${c.cls || ''}">${c.cell(b, inst[b.block])}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  };
+  drawBlocks();
+  $('#blocks-cols').appendChild(columnsButton('blocks', BLOCK_COLS, drawBlocks));
+  $('#blocks-table').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-block]');
+    if (tr && !e.target.closest('a,button')) openResults({ block: tr.dataset.block });
+  });
+  $$('[data-go]', el).forEach((b) => b.addEventListener('click', () => {
+    const g = b.dataset.go;
+    openResults(g === 'stale' || g === 'steep' || g === 'flood' ? { [g]: true } : { status: g });
+  }));
+  $$('[data-settings]', el).forEach((a) => a.addEventListener('click', () => { settingsGroup = a.dataset.settings; }));
   renderShareSummary();
 };
+
+const BLOCK_COLS = [
+  { key: 'block', label: 'Block', fixed: true, cell: (b) => `<b>${esc(b.block || '(none)')}</b>` },
+  { key: 'trackers', label: 'Trackers', cls: 'num', cell: (b) => int(b.trackers) },
+  { key: 'piles', label: 'Piles', cls: 'num', hidden: true, cell: (b) => int(b.piles) },
+  { key: 'surveyed', label: 'Surveyed', cls: 'bar-cell', cell: (b) => `<div class="bar-pair"><div class="mini-bar"><span style="width:${pct(b.surveyed, b.piles)}%"></span></div><span class="num">${pct(b.surveyed, b.piles)}%</span></div>` },
+  { key: 'status', label: 'Status', cls: 'bar-cell', cell: (b) => stackBar(b.counts, b.trackers, true) },
+  { key: 'Compliant', label: 'Compliant', cls: 'num', cell: (b) => int(b.counts.Compliant || 0) },
+  { key: 'Graded', label: 'Graded', cls: 'num', cell: (b) => int(b.counts.Graded || 0) },
+  { key: 'NonCompliant', label: 'Non-compliant', cls: 'num', cell: (b) => (b.counts.NonCompliant ? `<span class="bad-num">${int(b.counts.NonCompliant)}</span>` : '0') },
+  { key: 'AwaitingSurvey', label: 'Awaiting', cls: 'num', hidden: true, cell: (b) => int(b.counts.AwaitingSurvey || 0) },
+  { key: 'reveal', label: 'Avg reveal (m)', cls: 'num', tip: "Mean reveal of the block's piles with a result", cell: (b) => (b.reveal_mean == null ? '–' : fmt(b.reveal_mean, 3)) },
+  { key: 'installers', label: "Installers' file", tip: 'Excel file for the installers, written to the shared folder once the block is complete', cell: (b, inst) => installerCell(inst) },
+];
+
+/** Results tab with some filters set (from the Overview). */
+async function openResults(f) {
+  $('#f-search').value = '';
+  $('#f-block').value = f.block ?? '';
+  $('#f-status').value = f.status ?? '';
+  $('#f-stale').checked = !!f.stale;
+  $('#f-flood').checked = !!f.flood;
+  $('#f-steep').checked = !!f.steep;
+  await show('results', true);
+  if (f.block != null) $('#f-block').value = f.block;
+  if (f.status) $('#f-status').value = f.status;
+  rs.limit = 400;
+  drawTrackerTable();
+}
 
 function installerCell(b) {
   if (!b) return '';
@@ -343,7 +410,7 @@ function renderShareSummary() {
   const st = sync?.state;
   const [cls, text] = shareState();
   if (!st?.target) {
-    el.innerHTML = '<p class="muted">Off. Share one database between computers and the browser version through Google Drive: Settings &gt; Shared database.</p>';
+    el.innerHTML = '<p class="muted">Off. Share one database between computers and the browser version through Google Drive: Settings &gt; Database.</p>';
     return;
   }
   const status = st.status;
@@ -519,6 +586,7 @@ function renderMasterLock() {
 renderers.import = async () => {
   await loadSummary();
   renderMasterLock();
+  await renderHistory();
 };
 
 // ---------------------------------------------------------------- results
@@ -582,14 +650,13 @@ function renderLimits() {
   const lo = s.reveal_nominal + s.delta_min, hi = s.reveal_nominal + s.delta_max;
   const item = (label, value, tip) => `<div class="limit" title="${esc(tip)}"><span>${label}</span><b>${value}</b></div>`;
   $('#results-limits').innerHTML = [
-    item('Pile height (reveal) min', `${fmt(lo, 2)} m`, 'Lowest top of pile above the ground (Settings > Tracker & reveal)'),
-    item('Pile height max', `${fmt(hi, 2)} m`, 'Highest top of pile above the ground'),
-    item('Nominal', `${fmt(s.reveal_nominal, 2)} m`, 'Target pile height'),
-    item('Max angle change between spans', `${fmt(s.max_angle_deg, 2)}°`, 'Largest change of slope between two consecutive spans'),
-    item('Max cut/fill', `${fmt(s.max_cut_fill, 2)} m`, 'Cap on earthworks at a pile'),
-    item('Slope warning', `above ${fmt(s.slope_warn_pct, 1)} %`, 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile'),
-    item('Flood', `level + ${fmt(s.flood_freeboard_m + s.flood_pile_height_m - s.flood_module_clearance_m, 3)} m`, 'Lowest top of pile where there is a flood value (Settings > Flood)'),
-  ].join('') + '<a href="#settings" class="limit-edit">Settings</a>';
+    item('Reveal', `${fmt(lo, 2)} – ${fmt(hi, 2)} m <small>nominal ${fmt(s.reveal_nominal, 2)}</small>`, 'Pile height above the ground: lowest, highest and target (Settings > Design limits)'),
+    item('Angle change', `≤ ${fmt(s.max_angle_deg, 2)}°`, 'Largest change of slope between two consecutive spans'),
+    item('Cut / fill', `≤ ${fmt(s.max_cut_fill, 2)} m`, 'Cap on earthworks at a pile'),
+    item('Tube slope', `warn > ${fmt(s.slope_warn_pct, 1)} %`, 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile'),
+    item('Flood', `level + ${fmt(s.flood_freeboard_m + s.flood_pile_height_m - s.flood_module_clearance_m, 3)} m`, 'Lowest top of pile where there is a flood value (Settings > Design limits > Flood)'),
+  ].join('') + '<a href="#settings" class="limit-edit" data-settings="limits">Edit limits</a>';
+  $('#results-limits [data-settings]').addEventListener('click', () => { settingsGroup = 'limits'; });
 }
 
 renderers.results = async () => {
@@ -620,10 +687,7 @@ function filteredTrackers() {
   const list = state.trackers.filter((t) =>
     (!block || t.block === block) && (!status || t.status === status) && (!staleOnly || t.stale) && (!floodOnly || t.n_flood_raised > 0) && (!steepOnly || t.steep) &&
     (!q || t.tracker.toLowerCase().includes(q) || pileTrackers.has(t.tracker)));
-  const key = {
-    tracker: (t) => t.tracker, block: (t) => t.block, n_piles: (t) => t.n_piles, n_survey: (t) => t.n_survey / t.n_piles,
-    status: (t) => STATUS_ORDER.indexOf(t.status), max_angle_deg: (t) => t.max_angle_deg ?? -1, max_cut_fill: (t) => t.max_cut_fill ?? -1, tube_slope_pct: (t) => t.tube_slope_pct ?? -1, run_at: (t) => t.run_at ?? '',
-  }[rs.sort];
+  const key = (TRACKER_COLS.find((c) => c.key === rs.sort) ?? TRACKER_COLS[0]).sort;
   list.sort((a, b) => {
     const ka = key(a), kb = key(b);
     const c = typeof ka === 'number' ? ka - kb : natural(ka, kb);
@@ -632,24 +696,37 @@ function filteredTrackers() {
   return list;
 }
 
+const TRACKER_COLS = [
+  { key: 'tracker', label: 'Tracker', fixed: true, sort: (t) => t.tracker, cell: (t) => `<b>${esc(t.tracker)}</b>` },
+  { key: 'block', label: 'Block', sort: (t) => t.block, cell: (t) => esc(t.block) },
+  { key: 'section', label: 'Section', hidden: true, sort: (t) => t.section ?? '', cell: (t) => esc(t.section ?? '') },
+  { key: 'tracker_type', label: 'Tracker type', hidden: true, sort: (t) => t.tracker_type ?? '', cell: (t) => esc(t.tracker_type ?? '') },
+  { key: 'n_piles', label: 'Piles', cls: 'num', hidden: true, sort: (t) => t.n_piles, cell: (t) => t.n_piles },
+  { key: 'n_survey', label: 'Surveyed', cls: 'num', sort: (t) => t.n_survey / t.n_piles, cell: (t) => (t.n_survey === t.n_piles ? `<span class="ok-num">${t.n_survey}/${t.n_piles}</span>` : `${t.n_survey}/${t.n_piles}`) },
+  { key: 'n_lidar', label: 'LIDAR only', cls: 'num', hidden: true, sort: (t) => t.n_lidar ?? 0, cell: (t) => t.n_lidar ?? 0 },
+  { key: 'status', label: 'Status', sort: (t) => STATUS_ORDER.indexOf(t.status), cell: (t) => `${statusBadge(t.status)}${t.stale && t.run_id ? ' <span class="stale" title="Elevations or settings changed since this result">out of date</span>' : ''}` },
+  { key: 'max_angle_deg', label: 'Angle (°)', cls: 'num', tip: 'Largest angle change between two spans', sort: (t) => t.max_angle_deg ?? -1, cell: (t) => fmt(t.max_angle_deg, 3) },
+  { key: 'max_cut_fill', label: 'Cut/fill (m)', cls: 'num', tip: 'Largest cut or fill at a pile', sort: (t) => t.max_cut_fill ?? -1, cell: (t) => fmt(t.max_cut_fill, dc()) },
+  { key: 'tube_slope_pct', label: 'Slope (%)', cls: 'num', tip: 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile', sort: (t) => t.tube_slope_pct ?? -1, cell: (t) => (t.steep ? `<span class="warn-num" title="Above ${cache.summary.settings.slope_warn_pct}%">⚠ ${fmt(t.tube_slope_pct, 1)}</span>` : fmt(t.tube_slope_pct, 1)) },
+  { key: 'n_flood_raised', label: 'Flood raised', cls: 'num', hidden: true, tip: 'Piles raised to stay above the flood level', sort: (t) => t.n_flood_raised ?? 0, cell: (t) => (t.n_flood ? t.n_flood_raised : '') },
+  { key: 'max_shift', label: 'Max shift (m)', cls: 'num', hidden: true, tip: 'Largest set-out move along the tracker', sort: (t) => t.max_shift ?? -1, cell: (t) => (t.max_shift == null ? '' : fmt(t.max_shift, dc())) },
+  { key: 'span_error', label: 'Span check (mm)', cls: 'num', hidden: true, tip: 'Largest difference between a span along the tube and its design length', sort: (t) => t.span_error ?? -1, cell: (t) => (t.span_error == null ? '' : (t.span_error * 1000).toFixed(1)) },
+  { key: 'run_at', label: 'Result of', hidden: true, sort: (t) => t.run_at ?? '', cell: (t) => `<span class="muted">${esc(t.run_at?.slice(0, 16) ?? '')}</span>` },
+];
+let trackerColsButton = false;
+
 function drawTrackerTable() {
   const list = filteredTrackers();
   $('#f-count').textContent = `${int(list.length)} tracker${list.length === 1 ? '' : 's'}`;
-  const cols = [
-    ['tracker', 'Tracker', ''], ['block', 'Block', ''], ['n_piles', 'Piles', 'num'], ['n_survey', 'Surveyed', 'num'],
-    ['status', 'Status', ''], ['max_angle_deg', 'Angle (°)', 'num', 'Largest angle change between two spans'], ['max_cut_fill', 'Cut/fill (m)', 'num', 'Largest cut or fill at a pile'],
-    ['tube_slope_pct', 'Slope (%)', 'num', 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile'],
-  ];
-  const head = cols.map(([k, label, cls, tip]) => `<th class="sortable ${cls}" data-sort="${k}"${tip ? ` title="${tip}"` : ''}>${label}${rs.sort === k ? ` <span class="arrow">${rs.dir > 0 ? '▲' : '▼'}</span>` : ''}</th>`).join('');
-  const rows = list.slice(0, rs.limit).map((t) => `<tr class="clickable${t.tracker === rs.selected ? ' selected' : ''}" data-t="${esc(t.tracker)}">
-      <td>${esc(t.tracker)}</td><td>${esc(t.block)}</td><td class="num">${t.n_piles}</td>
-      <td class="num">${t.n_survey}/${t.n_piles}</td>
-      <td>${statusBadge(t.status)}${t.stale && t.run_id ? ' <span class="stale" title="Elevations or settings changed since this result">out of date</span>' : ''}</td>
-      <td class="num">${fmt(t.max_angle_deg, 3)}</td><td class="num">${fmt(t.max_cut_fill, dc())}</td>
-      <td class="num"${t.steep ? ` style="color:var(--warning-text);font-weight:600" title="Above ${cache.summary.settings.slope_warn_pct}%"` : ''}>${t.steep ? '⚠ ' : ''}${fmt(t.tube_slope_pct, 1)}</td></tr>`).join('');
-  const more = list.length > rs.limit ? `<tr><td colspan="8" style="text-align:center"><button class="btn small" id="show-more">Show ${int(Math.min(400, list.length - rs.limit))} more</button></td></tr>` : '';
+  if (!trackerColsButton) {
+    trackerColsButton = true;
+    $('#tracker-cols').appendChild(columnsButton('trackers', TRACKER_COLS, drawTrackerTable));
+  }
+  const cols = visibleColumns('trackers', TRACKER_COLS);
+  const rows = list.slice(0, rs.limit).map((t) => `<tr class="clickable${t.tracker === rs.selected ? ' selected' : ''}" data-t="${esc(t.tracker)}">${cols.map((c) => `<td class="${c.cls || ''}">${c.cell(t)}</td>`).join('')}</tr>`).join('');
+  const more = list.length > rs.limit ? `<tr><td colspan="${cols.length}" style="text-align:center"><button class="btn small" id="show-more">Show ${int(Math.min(400, list.length - rs.limit))} more</button></td></tr>` : '';
   const table = $('#tracker-table');
-  table.innerHTML = `<thead><tr>${head}</tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">No tracker matches these filters.</td></tr>'}${more}</tbody>`;
+  table.innerHTML = `<thead><tr>${headCells(cols, { key: rs.sort, dir: rs.dir })}</tr></thead><tbody>${rows || `<tr><td colspan="${cols.length}" class="muted">No tracker matches these filters.</td></tr>`}${more}</tbody>`;
   $$('th[data-sort]', table).forEach((th) => th.addEventListener('click', () => {
     const k = th.dataset.sort;
     rs.dir = rs.sort === k ? -rs.dir : 1;
@@ -667,54 +744,85 @@ function drawTrackerTable() {
 
 ['#f-search', '#f-block', '#f-status', '#f-stale', '#f-flood', '#f-steep'].forEach((s) => $(s).addEventListener('input', () => { rs.limit = 400; if (cache.state) drawTrackerTable(); }));
 
+/** Columns of the pile table of tracker `t`. */
+function pileCols(t) {
+  const p = cache.state.piles, settings = cache.summary.settings;
+  const d = dc();
+  const hasFlood = t.n_flood > 0;
+  const used = (i, k) => (p.zsrc[i] === k ? 'used' : 'muted');
+  return [
+    { key: 'pile', label: 'Pile', fixed: true, cell: (i) => esc(p.id[i]) },
+    { key: 'type', label: 'Type', cell: (i) => `<span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}${isMotorPile(p.type[i]) ? ' <span class="motor-tag" title="Motor pile">M</span>' : ''}</span>` },
+    { key: 'en', label: 'Easting / Northing', group: 'Position', cls: 'num', hidden: true, cell: (i) => `${fmt(p.e[i], 3)} / ${fmt(p.n[i], 3)}` },
+    { key: 'zs', label: 'Survey Z', group: 'Ground', cls: 'num', tip: 'Latest field survey (hover for its date). Bold: the ground in use.', td: (i) => used(i, 'survey'), cell: (i) => `${p.zs[i] == null ? '–' : `<span title="Survey of ${esc(p.zdate[i] ?? '')}">${fmt(p.zs[i])}</span>`}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠</span>` : ''}` },
+    { key: 'zdate', label: 'Survey date', group: 'Ground', hidden: true, cell: (i) => esc(p.zdate[i] ?? '') },
+    { key: 'zl', label: 'LIDAR Z', group: 'Ground', cls: 'num', tip: 'LIDAR / design ground. Bold: the ground in use.', td: (i) => used(i, 'lidar'), cell: (i) => fmt(p.zl[i]) },
+    { key: 'dz', label: 'Δ', group: 'Ground', cls: 'num', tip: 'Survey minus LIDAR (m)', cell: (i) => (p.zs[i] != null && p.zl[i] != null ? fmt(p.zs[i] - p.zl[i], d) : '') },
+    { key: 'ng', label: 'New ground', group: 'Result', cls: 'num', hidden: true, tip: 'Ground after cut/fill', cell: (i) => fmt(p.ng[i], d) },
+    { key: 'cf', label: 'Cut/fill', group: 'Result', cls: 'num', cell: (i) => fmt(p.cf[i], d) },
+    { key: 'top', label: 'ToP', group: 'Result', cls: 'num', fixed: true, cell: (i) => `<b>${fmt(p.top[i], d)}</b>` },
+    { key: 'rev', label: 'Reveal', group: 'Result', cls: 'num', cell: (i) => fmt(p.rev[i], d) },
+    { key: 'ang', label: 'Angle (°)', group: 'Result', cls: 'num', cell: (i) => {
+      const over = p.ang[i] != null && Math.abs(p.ang[i]) > settings.max_angle_deg + 0.001;
+      return `<span${over ? ' class="bad-num"' : ''}>${fmt(p.ang[i], 3)}</span>${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}`;
+    } },
+    { key: 'shift', label: 'Shift', group: 'Set-out', cls: 'num', when: p.shift[t.first_pile] != null, tip: 'Move along the tracker from the design position (m), to keep the torque-tube spans at their design length. Hover for the set-out coordinates.', cell: (i) => {
+      const sh = p.shift[i];
+      const big = sh != null && Math.abs(sh) > settings.shift_warn_m;
+      return `<span title="${p.se[i] == null ? '' : `Set-out E ${fmt(p.se[i], d)}  N ${fmt(p.sn[i], d)}`}"${big ? ' class="warn-num"' : ''}>${sh == null ? '–' : fmt(sh, d)}</span>`;
+    } },
+    { key: 'seten', label: 'Set-out E / N', group: 'Set-out', cls: 'num', hidden: true, when: p.shift[t.first_pile] != null, cell: (i) => (p.se[i] == null ? '' : `${fmt(p.se[i], d)} / ${fmt(p.sn[i], d)}`) },
+    { key: 'flood', label: 'Flood', group: 'Flood', cls: 'num', when: hasFlood, tip: 'Flood value (▲: top raised above the flood level)', cell: (i) => (p.flood[i] == null ? '–' : `${fmt(p.flood[i], 2)}${p.mta[i] ? ' <span class="raised" title="Top raised to stay above the flood level">▲</span>' : ''}`) },
+    { key: 'mintop', label: 'Lowest top', group: 'Flood', cls: 'num', hidden: true, when: hasFlood, tip: 'Lowest allowed top of pile from the flood rule', cell: (i) => fmt(p.mintop[i], d) },
+  ];
+}
+let pileColsFor = null;
+const pileColsButton = columnsButton('piles', () => pileCols(pileColsFor), () => drawPileTable(pileColsFor));
+
+function drawPileTable(t) {
+  const cols = visibleColumns('piles', pileCols(t));
+  const ids = Array.from({ length: t.n_piles }, (_, k) => t.first_pile + k);
+  $('#pile-table').innerHTML = `<thead><tr>${headCells(cols)}</tr></thead><tbody>${ids.map((i) => `<tr>${cols.map((c) => `<td class="${c.cls || ''} ${c.td ? c.td(i) : ''}">${c.cell(i)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+}
+
 function renderDetail(t) {
   const state = cache.state, settings = cache.summary.settings;
-  const p = state.piles;
   const rows = trackerRowsFor(state, t);
   const el = $('#tracker-detail');
-  const hasFlood = t.n_flood > 0;
-  const piles = rows.map((r) => {
-    const i = r.i;
-    const over = r.ang != null && Math.abs(r.ang) > settings.max_angle_deg + 0.001;
-    const sh = p.shift[i];
-    const big = sh != null && Math.abs(sh) > settings.shift_warn_m;
-    const d = dc();
-    const shiftCell = `<td class="num" title="${p.se[i] == null ? '' : `Set-out E ${fmt(p.se[i], d)}  N ${fmt(p.sn[i], d)}`}"${big ? ' style="color:var(--warning-text);font-weight:600"' : ''}>${sh == null ? '–' : fmt(sh, d)}</td>`;
-    const flood = p.flood[i] == null ? '–' : `${fmt(p.flood[i], 2)}${p.mta[i] ? ' <span class="raised" title="Top raised to stay above the flood level">▲</span>' : ''}`;
-    const used = (k) => (p.zsrc[i] === k ? ' class="num used" title="Ground in use"' : ' class="num muted"');
-    const diff = p.zs[i] != null && p.zl[i] != null ? p.zs[i] - p.zl[i] : null;
-    return `<tr>
-      <td>${esc(p.id[i])}</td><td><span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}${isMotorPile(p.type[i]) ? ' <span class="motor-tag" title="Motor pile">M</span>' : ''}</span></td>
-      <td${used('survey')}>${p.zs[i] == null ? '–' : `<span title="Survey of ${esc(p.zdate[i] ?? '')}">${fmt(p.zs[i])}</span>`}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠</span>` : ''}</td>
-      <td${used('lidar')}>${fmt(p.zl[i])}</td>
-      <td class="num">${diff == null ? '' : fmt(diff, d)}</td>
-      <td class="num">${fmt(p.cf[i], d)}</td><td class="num"><b>${fmt(p.top[i], d)}</b></td>${shiftCell}<td class="num">${fmt(p.rev[i], d)}</td>
-      ${hasFlood ? `<td class="num" title="${p.mintop[i] == null ? '' : `Lowest allowed top: ${fmt(p.mintop[i])}`}">${flood}</td>` : ''}
-      <td class="num"${over ? ' style="color:var(--critical-text);font-weight:600"' : ''}>${fmt(p.ang[i], 3)}${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}</td></tr>`;
-  }).join('');
+  const kv = (label, value, extra = '') => `<div${extra}><span>${label}</span><b>${value}</b></div>`;
+  const spanOk = t.span_error != null && t.span_error <= (settings.round_step || 0) + 0.0005;
   el.innerHTML = `
-    <div class="card-head"><h2>${esc(t.tracker)}</h2><div style="display:flex;gap:8px;align-items:center">${statusBadge(t.status)}<button class="btn small" id="detail-3d">Show in 3D</button></div></div>
-    ${t.stale && t.run_id ? '<p class="stale" style="margin-bottom:8px">Out of date: elevations or settings changed since this result. Click Optimise.</p>' : ''}
-    ${t.n_missing ? `<p class="ink2" style="margin-bottom:8px">${t.n_missing} pile${t.n_missing === 1 ? ' has' : 's have'} no elevation yet; the tracker is optimised once every pile has one.</p>` : ''}
-    <div class="kv">
-      <div><span>Block / section</span><b>${esc(t.block || '–')} / ${esc(t.section || '–')}</b></div>
-      ${t.tracker_type ? `<div style="grid-column:span 2"><span>Tracker type</span><b>${esc(t.tracker_type)}</b></div>` : ''}
-      <div><span>Piles surveyed</span><b>${t.n_survey} of ${t.n_piles}</b></div>
-      <div><span>LIDAR only</span><b>${t.n_lidar}</b></div>
-      <div><span>Max angle change</span><b>${fmt(t.max_angle_deg, 3)}°</b></div>
-      <div><span>Max cut/fill</span><b>${fmt(t.max_cut_fill, dc())} m</b></div>
-      ${t.anchor_pile ? `<div><span>Fixed pile (set-out)</span><b>${esc(t.anchor_pile.split('.').pop())}${t.anchor_motor ? ' · motor' : ' · middle'}</b></div>
-      <div><span>Largest shift</span><b>${fmt(t.max_shift ?? 0, dc())} m</b></div>
-      <div title="Largest difference between a span's length along the tube and its design length, from the (rounded) set-out positions and tops"><span>Span check</span><b>${t.span_error != null && t.span_error <= (settings.round_step || 0) + 0.0005 ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(1)} mm</b></div>` : ''}
-      <div><span>Result of</span><b>${esc(t.run_at?.slice(0, 16) ?? '–')}</b></div>
-      <div${t.steep ? ' style="color:var(--warning-text)"' : ''} title="Mean of the absolute slopes of the spans between the tops of pile"><span>Torque-tube slope</span><b>${t.steep ? '⚠ ' : ''}${fmt(t.tube_slope_pct, 2)} %${t.steep ? ` (above ${cache.summary.settings.slope_warn_pct}%)` : ''}</b></div>
-      <div><span>Flood values</span><b>${t.n_flood ? `${t.n_flood} of ${t.n_piles} · ${t.n_flood_raised} raised` : 'none'}</b></div>
+    <div class="card-head detail-head">
+      <div><h2>${esc(t.tracker)}</h2><div class="muted">Block ${esc(t.block || '–')} · section ${esc(t.section || '–')}${t.tracker_type ? ` · ${esc(t.tracker_type)}` : ''}</div></div>
+      <div style="display:flex;gap:8px;align-items:center">${statusBadge(t.status)}<button class="btn small" id="detail-3d">Show in 3D</button></div>
     </div>
-    <div class="profile-tools"><button class="btn small" id="profile-full" title="Show the profile on the whole screen, with pile numbers (Esc to close)">⤢ Full screen</button></div>
+    ${t.stale && t.run_id ? '<p class="notice warn">Out of date: elevations or settings changed since this result. Click Optimise.</p>' : ''}
+    ${t.n_missing ? `<p class="notice">${t.n_missing} pile${t.n_missing === 1 ? ' has' : 's have'} no elevation yet; the tracker is optimised once every pile has one.</p>` : ''}
+    <div class="kv-groups">
+      <div class="kv-group"><h4>Ground</h4><div class="kv">
+        ${kv('Surveyed', `${t.n_survey} of ${t.n_piles}`)}
+        ${t.n_lidar ? kv('LIDAR only', t.n_lidar) : ''}
+        ${t.n_flood ? kv('Flood values', `${t.n_flood} · ${t.n_flood_raised} raised`) : ''}
+      </div></div>
+      <div class="kv-group"><h4>Result</h4><div class="kv">
+        ${kv('Max angle change', `${fmt(t.max_angle_deg, 3)}°`)}
+        ${kv('Max cut/fill', `${fmt(t.max_cut_fill, dc())} m`)}
+        ${kv('Tube slope', `${t.steep ? '⚠ ' : ''}${fmt(t.tube_slope_pct, 2)} %`, t.steep ? ` class="warn-num" title="Above ${settings.slope_warn_pct}%: mean of the absolute slopes of the spans"` : ' title="Mean of the absolute slopes of the spans between the tops of pile"')}
+        ${kv('Result of', esc(t.run_at?.slice(0, 16) ?? '–'))}
+      </div></div>
+      ${t.anchor_pile ? `<div class="kv-group"><h4>Set-out</h4><div class="kv">
+        ${kv('Fixed pile', `${esc(t.anchor_pile.split('.').pop())}${t.anchor_motor ? ' · motor' : ' · middle'}`)}
+        ${kv('Largest shift', `${fmt(t.max_shift ?? 0, dc())} m`)}
+        ${kv('Span check', `${spanOk ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(1)} mm`, ' title="Largest difference between a span\'s length along the tube and its design length"')}
+      </div></div>` : ''}
+    </div>
+    <div class="profile-tools"><button class="btn small ghost" id="profile-full" title="Show the profile on the whole screen, with pile numbers (Esc to close)">⤢ Full screen</button></div>
     <div id="profile"></div>
-    <div class="table-wrap" style="margin-top:12px"><table>
-      <thead><tr><th>Pile</th><th>Type</th><th class="num" title="Latest field survey (hover for its date). Bold: the ground in use.">Survey Z</th><th class="num" title="LIDAR / design ground. Bold: the ground in use.">LIDAR Z</th><th class="num" title="Survey minus LIDAR (m)">Δ</th><th class="num">Cut/fill</th><th class="num">ToP</th><th class="num" title="Move along the tracker from the design position (m), to keep the torque-tube spans at their design length. Hover for the set-out coordinates.">Shift</th><th class="num">Reveal</th>${hasFlood ? '<th class="num" title="Flood value (▲: top raised above the flood level)">Flood</th>' : ''}<th class="num">Angle (°)</th></tr></thead>
-      <tbody>${piles}</tbody></table></div>`;
+    <div class="sub-head"><h3>Piles</h3><span id="pile-cols"></span></div>
+    <div class="table-wrap"><table id="pile-table"></table></div>`;
+  pileColsFor = t;
+  $('#pile-cols').appendChild(pileColsButton);
+  drawPileTable(t);
   renderProfile($('#profile', el), rows, settings);
   $('#profile-full').addEventListener('click', () => openProfileFull(t));
   $('#detail-3d').addEventListener('click', async () => {
@@ -839,18 +947,34 @@ renderers.map = async () => {
 
 // ---------------------------------------------------------------- history
 
-renderers.history = async () => {
-  const list = await api('GET', 'api/imports');
-  const rows = list.map((r) => `<tr class="${r.voided_at ? 'void' : ''}">
-    <td class="num">${r.import_id}</td><td>${esc(KIND[r.kind] || r.kind)}</td><td>${esc(r.file_name)}</td>
-    <td>${esc(r.survey_date || '')}</td><td class="muted">${esc(r.imported_at)}</td><td class="muted">${esc(r.origin)}</td>
-    <td class="num">${int(r.rows_total)}</td><td class="num">${int(r.rows_used)}</td><td class="num">${int(r.rows_rejected)}</td>
-    <td class="keep">${r.voided_at ? `<span class="pill void" title="${esc(r.void_reason)}">Void · ${esc(r.voided_at.slice(0, 10))}</span>` : '<span class="pill ok">Active</span>'}</td>
-    <td class="keep" style="white-space:nowrap"><button class="btn small" data-report="${r.import_id}">Report</button>
-      ${r.kind !== 'master' && !r.voided_at ? `<button class="btn small danger" data-void="${r.import_id}">Void…</button>` : ''}</td></tr>`).join('');
+const HISTORY_COLS = [
+  { key: 'id', label: '#', cls: 'num', cell: (r) => r.import_id },
+  { key: 'kind', label: 'Type', cell: (r) => esc(KIND[r.kind] || r.kind) },
+  { key: 'file', label: 'File', fixed: true, cell: (r) => esc(r.file_name) },
+  { key: 'date', label: 'Survey date', cell: (r) => esc(r.survey_date || '') },
+  { key: 'imported', label: 'Imported', cls: 'muted', cell: (r) => esc(r.imported_at) },
+  { key: 'origin', label: 'Origin', cls: 'muted', hidden: true, cell: (r) => esc(r.origin) },
+  { key: 'rows', label: 'Rows', cls: 'num', hidden: true, cell: (r) => int(r.rows_total) },
+  { key: 'used', label: 'Used', cls: 'num', cell: (r) => int(r.rows_used) },
+  { key: 'skipped', label: 'Skipped', cls: 'num', cell: (r) => int(r.rows_rejected) },
+  { key: 'status', label: 'Status', cls: 'keep', cell: (r) => (r.voided_at ? `<span class="pill void" title="${esc(r.void_reason)}">Void · ${esc(r.voided_at.slice(0, 10))}</span>` : '<span class="pill ok">Active</span>') },
+  { key: 'actions', label: '', fixed: true, cls: 'keep nowrap', cell: (r) => `<button class="btn small" data-report="${r.import_id}">Report</button>
+      ${r.kind !== 'master' && !r.voided_at ? `<button class="btn small danger" data-void="${r.import_id}">Void…</button>` : ''}` },
+];
+let historyList = [];
+$('#history-cols').appendChild(columnsButton('history', HISTORY_COLS, () => drawHistory()));
+
+async function renderHistory() {
+  historyList = await api('GET', 'api/imports');
+  drawHistory();
+}
+
+function drawHistory() {
+  const list = historyList;
+  const cols = visibleColumns('history', HISTORY_COLS);
   const table = $('#imports-table');
-  table.innerHTML = `<thead><tr><th class="num">#</th><th>Type</th><th>File</th><th>Survey date</th><th>Imported</th><th>Origin</th><th class="num">Rows</th><th class="num">Used</th><th class="num">Skipped</th><th>Status</th><th></th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="11" class="muted">Nothing imported yet.</td></tr>'}</tbody>`;
+  table.innerHTML = `<thead><tr>${headCells(cols)}</tr></thead>
+    <tbody>${list.map((r) => `<tr class="${r.voided_at ? 'void' : ''}">${cols.map((c) => `<td class="${c.cls || ''}">${c.cell(r)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}" class="muted">Nothing imported yet.</td></tr>`}</tbody>`;
   $$('[data-report]', table).forEach((b) => b.addEventListener('click', async () => {
     const r = await api('GET', `api/imports/${b.dataset.report}`);
     const rep = r.report || { file_name: r.file_name, kind: r.kind, accepted: true, findings: [] };
@@ -1104,7 +1228,17 @@ if (BROWSER) {
 document.querySelectorAll('.browser-only').forEach((el) => { el.hidden = !BROWSER; });
 document.querySelectorAll('.desktop-only').forEach((el) => { el.hidden = BROWSER; });
 
+let settingsGroup = (() => { try { return localStorage.getItem('tracker-top.settings-group') || 'limits'; } catch { return 'limits'; } })();
+function showSettingsGroup(g) {
+  settingsGroup = g;
+  try { localStorage.setItem('tracker-top.settings-group', g); } catch { /* not kept */ }
+  $$('#tab-settings .settings-nav button').forEach((b) => b.setAttribute('aria-current', String(b.dataset.group === g)));
+  $$('#tab-settings .settings-body [data-group]').forEach((el) => { el.hidden = !el.dataset.group.split(' ').includes(g); });
+}
+$$('#tab-settings .settings-nav button').forEach((b) => b.addEventListener('click', () => showSettingsGroup(b.dataset.group)));
+
 renderers.settings = async () => {
+  showSettingsGroup(settingsGroup);
   const [{ settings, defaults, watch_folder }, sum, opts] = await Promise.all([api('GET', 'api/settings'), loadSummary(true), api('GET', 'api/export/options')]);
   const profileSelect = $('[name="auto_export_profile"]');
   const names = [...new Set([...opts.profiles.map((p) => p.name), settings.auto_export_profile])];

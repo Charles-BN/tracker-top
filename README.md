@@ -79,14 +79,22 @@ Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the 
    tracker has an elevation. Only trackers whose elevations or flood values changed are
    recomputed.
 6. Read the **Results** (per tracker: status, profile chart, pile table), the **3D view**, the
-   **History** of imports, and **Export Excel** (sheets *Piles*, *Trackers*, *Imports*,
-   *Settings*), **Custom…** (your choice of columns, blocks and sheets, see *Custom export*), CSV,
-   or **ArcGIS** (GeoPackage, see *ArcGIS* below).
+   import history (bottom of *Import*), and the **Export** menu (top right): **Excel,
+   everything** (sheets *Piles*, *Trackers*, *Imports*, *Settings*), **Excel, custom…** (your
+   choice of columns, blocks and sheets, see *Custom export*), **CSV**, or **ArcGIS / QGIS**
+   (GeoPackage, see *ArcGIS* below).
 
-Tabs: *Overview* (counts, **average reveal**, progress by block with each block's average reveal
-and installers' file), *Import*, *Results*, **Map** (2D plan, see below), *3D view*, *History*,
-*Settings* (reveal window, angle limit, rounding, survey-matching tolerances, installers' files,
-watch folder, database, shared database).
+Tabs: *Overview* (share of trackers with a valid top of pile, ground elevations, **average
+reveal**, a "to look at" list that opens the matching trackers in Results, progress by block,
+last activity), *Results*, **Map** (2D plan, see below), *3D*, *Import* (drop zones and the
+import history) and *Settings*, in four sections: **Design limits** (reveal window, angle limit,
+rounding, flood, set-out), **Survey import** (matching tolerances, watch folder), **Outputs**
+(installers' files, ArcGIS) and **Database** (backup, shared database).
+
+**Columns**: the tables (progress by block, trackers, piles of a tracker, import history) have a
+**Columns** button to choose what they show, with more columns available than shown by default
+(section, tracker type, LIDAR-only piles, set-out shift and span check, survey date, new ground,
+lowest top for flood…). The choice is kept in this browser.
 
 **Results**: the top of the tab repeats the design limits from the settings (pile height min /
 max / nominal, max angle change between spans, max cut/fill, flood rule). A tracker's profile
@@ -95,7 +103,7 @@ of pile, the allowed band and the flood level; motor piles are an outlined squar
 M in the pile table); each end is labelled with its compass direction (← S, N →).
 
 **Slope warning**: every tracker gets its torque-tube slope, the mean of the absolute slopes of
-its spans between the optimised tops of pile (%). Above *Settings → Tracker & reveal → Warn when
+its spans between the optimised tops of pile (%). Above *Settings → Design limits → Tracker & reveal → Warn when
 the torque-tube slope is above* (6 % by default) the tracker is flagged ⚠: Slope column and
 *Steep* filter in Results, tracker details, Overview tile, Excel (*Tube Slope (%)*, *Slope
 Warning*) and the ArcGIS trackers layer. On the project file: 67 trackers above 6 %, the steepest
@@ -107,7 +115,7 @@ the exports show both the latest **survey Z** (with its date) and the **LIDAR Z*
 in bold (the survey when there is one), and their difference.
 
 **Precision**: calculated values (tops of pile, cut/fill, set-out positions and shifts) are
-rounded to the **centimetre** (*Settings → Tracker & reveal → Round … to*, 0.01 m; 0 keeps them
+rounded to the **centimetre** (*Settings → Design limits → Tracker & reveal → Round … to*, 0.01 m; 0 keeps them
 exact) and shown with 2 decimals; measured ground elevations keep 3. The rounding is part of the
 calculation, not only of the display: each pile's top is chosen among the centimetre values next
 to the exact optimum so that the angle limit, the reveal window, the flood minimum and the
@@ -164,10 +172,10 @@ as a survey. All tolerances are in Settings.
 Each pile can have a flood value (metres): the **flood level** (water elevation, same datum as
 the ground; the default) or the flood depth. Use the level: it does not depend on the ground,
 which moves away from the LIDAR the flood study was based on. A file with both a depth and a
-level column gives the one chosen in *Settings → Flood*; a file with only the other kind is
+level column gives the one chosen in *Settings → Design limits → Flood*; a file with only the other kind is
 refused rather than misread.
 
-The project rule (*Settings → Flood*): at the reference pile height (1.075 m) the lowest module
+The project rule (*Settings → Design limits → Flood*): at the reference pile height (1.075 m) the lowest module
 edge is 0.30 m above the ground, and it must stay 0.10 m (freeboard) above the flood level. So:
 
 ```
@@ -205,7 +213,7 @@ so the piles must move along the tracker:
   (*Span check*).
 
 Results show the set-out Easting/Northing and the shift (mm) of every pile, the fixed pile and the
-largest shift of each tracker; piles moving more than 0.10 m are highlighted (Settings → Set-out,
+largest shift of each tracker; piles moving more than 0.10 m are highlighted (Settings → Design limits → Set-out,
 where the calculation can also be turned off). On the project master file the largest shift of a
 tracker is 11.5 mm (median), 98 mm (95th percentile) and 215 mm at most (steep 15-pile trackers).
 The Excel/CSV exports carry `Set-out Easting`, `Set-out Northing`, `Shift Along Tracker (m)`, and
@@ -224,7 +232,7 @@ The **ArcGIS** button downloads a GeoPackage (`.gpkg`, OGC standard) with two la
   piles.
 
 The coordinate system is **GDA2020 / MGA zone 56 (EPSG:7856)** by default; another one can be set in
-**Settings → ArcGIS export** (EPSG code). Then:
+**Settings → Outputs → ArcGIS export** (EPSG code). Then:
 
 - **ArcGIS Pro**: *Add Data* → the `.gpkg` file (or drag it onto the map / a local scene).
 - **ArcGIS Online / Portal**: *Content → New item* → the `.gpkg` → *Create a hosted feature layer*.
@@ -234,7 +242,7 @@ The coordinate system is **GDA2020 / MGA zone 56 (EPSG:7856)** by default; anoth
 
 ### Watch folder and Trimble Connect
 
-`tracker-top` can import survey files automatically: in **Settings → Watch folder** (or with
+`tracker-top` can import survey files automatically: in **Settings → Survey import → Watch folder** (or with
 `--watch <folder>`), give a folder on the computer. Every 30 s it imports each new CSV/TXT/Excel
 file found there or in its subfolders as a field survey, then re-optimises. Files already
 imported are skipped; files still being written wait for the next scan; results appear in
@@ -260,7 +268,7 @@ export log), followed by a re-optimisation. The only thing that cannot be merged
 master pile lists: the page then asks which database to keep, and keeps the other as a copy file in
 the folder.
 
-Set it up in **Settings → Shared database** on each computer: give the computer a name (shown as
+Set it up in **Settings → Database → Shared database** on each computer: give the computer a name (shown as
 "saved by"), then choose one of:
 
 - **Folder on this computer** (Edge, Chrome): with
@@ -294,7 +302,7 @@ closed are shared when the page opens). Each exchange moves the whole file (abou
 4. *Clients → Create client*: type **Web application**; under *Authorized JavaScript origins* add
    the site's address, `https://charles-bn.github.io`, and for the desktop program
    `http://localhost:8770`. No redirect URI is needed.
-5. Copy the **Client ID** (`….apps.googleusercontent.com`) and either paste it in *Settings →
+5. Copy the **Client ID** (`….apps.googleusercontent.com`) and either paste it in *Settings → Database →
    Shared database → OAuth client ID* on each computer, or put it in `crates/top-app/web/config.js`
    (`googleClientId`) so that the page has it for everyone. A client ID is not a secret.
 
@@ -306,11 +314,11 @@ Google first shows "Google hasn't verified this app": *Continue*.
 
 When **every pile of a block** has a field-survey elevation and **every tracker** of it has a
 current result (by default also: every tracker compliant or graded), the page writes the block's
-Excel file for the installers into the shared folder, in **For installers** (Settings →
+Excel file for the installers into the shared folder, in **For installers** (Settings → Outputs →
 *Installers' files*: on/off, folder name, columns, the compliance condition).
 
 *Where it is*: `For installers` is created automatically **inside the shared database folder**
-(the one chosen in *Settings → Shared database*), next to `tracker-top.db`, when the first block
+(the one chosen in *Settings → Database → Shared database*), next to `tracker-top.db`, when the first block
 is complete; nothing else needs linking. Without a shared folder, no file is written (the
 Overview says so). Files:
 `Block 30 - pile heights rev 1.xlsx`, with a *Piles* sheet (by default: block, tracker, pile ID, pile
@@ -326,7 +334,7 @@ Re-optimising with the same results does not create a new revision.
 
 ### Custom export
 
-**Custom…** (top right) opens a choice of:
+**Export → Excel, custom…** (top right) opens a choice of:
 
 - **columns** of the *Piles* sheet (30, grouped: pile, position, ground, flood, result), in the
   order of the chosen profile;
