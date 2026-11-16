@@ -400,7 +400,10 @@ $('#sync-chip').addEventListener('click', async () => {
   if (sync?.state.phase === 'needs-permission') {
     try { await sync.reconnect(); } catch (e) { toast(e.message, true); }
   } else {
-    show('settings');
+    settingsGroup = 'database';
+    await show('settings');
+    showSettingsGroup('database');
+    $('#share-card')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 });
 
@@ -1404,7 +1407,11 @@ async function poll() {
     },
     exported: (text) => toast(text),
   });
-  sync.onUpdate(() => {
+  let shownError = '';
+  sync.onUpdate((st) => {
+    // A new sync problem: say why at once (the chip only says "Sync problem").
+    if (st.phase === 'error' && st.message && st.message !== shownError) toast(`Shared database: ${st.message}`, true);
+    if (st.phase === 'error') shownError = st.message; else if (st.phase === 'idle') shownError = '';
     renderSyncChip();
     renderShareSummary();
     if (current === 'settings') renderShareCard();
