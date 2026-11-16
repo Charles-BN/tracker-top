@@ -12,23 +12,32 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">tracker-top <small id="db-path" title=""></small>
-    <button type="button" class="sync-chip" id="sync-chip" hidden></button></div>
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="23" cy="9" r="4.2" fill="var(--sun)"/><path d="M3 21.5 L27 15.5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M8 20.2V28M15 18.4V28M22 16.6V28" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".7"/></svg>
+    <span>tracker-top</span>
+    <button type="button" class="sync-chip" id="sync-chip" hidden></button>
+  </div>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
-    <button role="tab" data-tab="import" aria-selected="false">Import</button>
+    <span class="tab-sep" aria-hidden="true"></span>
     <button role="tab" data-tab="results" aria-selected="false">Results</button>
     <button role="tab" data-tab="map" aria-selected="false">Map</button>
-    <button role="tab" data-tab="view3d" aria-selected="false">3D view</button>
-    <button role="tab" data-tab="history" aria-selected="false">History</button>
+    <button role="tab" data-tab="view3d" aria-selected="false">3D</button>
+    <span class="tab-sep" aria-hidden="true"></span>
+    <button role="tab" data-tab="import" aria-selected="false">Import</button>
     <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
   </nav>
   <div class="actions">
-    <button class="btn" id="btn-optimize" title="Optimise every tracker whose elevations or settings changed">Optimise <span id="stale-count" class="count-badge" hidden></span></button>
-    <a class="btn" href="api/export.xlsx" download title="Every pile with every column, all trackers, imports and settings">Export Excel</a>
-    <button class="btn" type="button" id="btn-custom" title="Choose the columns, blocks and sheets to export">Custom…</button>
-    <a class="btn" href="api/export.csv" download>CSV</a>
-    <a class="btn" href="api/export.gpkg" download id="btn-gpkg" title="GeoPackage for ArcGIS Pro / ArcGIS Online / QGIS: piles and trackers, with all results">ArcGIS</a>
+    <button class="btn primary" id="btn-optimize" title="Optimise every tracker whose elevations or settings changed">Optimise <span id="stale-count" class="count-badge" hidden></span></button>
+    <details class="menu" id="export-menu">
+      <summary class="btn">Export <span aria-hidden="true" class="caret">▾</span></summary>
+      <div class="menu-list" role="menu">
+        <a role="menuitem" href="api/export.xlsx" download><b>Excel, everything</b><small>Every pile and column, trackers, imports, settings</small></a>
+        <button role="menuitem" type="button" id="btn-custom"><b>Excel, custom…</b><small>Choose columns, blocks and sheets</small></button>
+        <a role="menuitem" href="api/export.csv" download><b>CSV</b><small>One row per pile</small></a>
+        <a role="menuitem" href="api/export.gpkg" download id="btn-gpkg"><b>ArcGIS / QGIS</b><small>GeoPackage of piles and trackers</small></a>
+      </div>
+    </details>
   </div>
 </header>
 
@@ -36,46 +45,57 @@
   <section class="tab active" id="tab-overview" role="tabpanel"></section>
 
   <section class="tab" id="tab-import" role="tabpanel">
-    <div class="grid cols-3">
-      <div class="card">
+    <div class="grid cols-4 import-grid">
+      <div class="card import-card">
         <div class="card-head"><h2>Daily survey report</h2></div>
-        <p class="ink2">Field survey of pile positions and real ground elevation. CSV, TXT or Excel; with or without a header row (Point, Easting, Northing, Elevation, Code). Points are matched to piles by ID, or by position when the ID is unknown.</p>
-        <div class="drop" data-kind="survey" tabindex="0" role="button" aria-label="Choose survey files" style="margin-top:12px"><b>Drop survey files here</b><br>or click to choose. Several files at once is fine.</div>
+        <p class="ink2">Daily field survey: real ground elevation at each pile.</p>
+        <div class="drop" data-kind="survey" tabindex="0" role="button" aria-label="Choose survey files"><b>Drop survey files</b><span>or click to choose · several at once</span></div>
         <div class="row-fields">
-          <label class="field"><span>Survey date</span><input type="date" id="survey-date"><small>Leave empty to read it from the file or its name.</small></label>
+          <label class="field"><span>Survey date</span><input type="date" id="survey-date"><small>Empty: read from the file or its name.</small></label>
         </div>
+        <details class="more"><summary>Accepted files</summary><p>CSV, TXT or Excel, with or without a header row (Point, Easting, Northing, Elevation, Code). Points are matched to piles by ID, or by position when the ID is unknown.</p></details>
       </div>
-      <div class="card">
+      <div class="card import-card">
         <div class="card-head"><h2>Master pile list</h2></div>
         <div id="master-lock" class="lock" hidden></div>
-        <p class="ink2">The immutable core: pile ID, Easting, Northing, pile type, colour (and tracker, block, section when available). Once loaded it can never be changed; a later file can only add new piles. A ground elevation column (such as Z LIDAR) is also recorded as LIDAR ground.</p>
-        <div class="drop" data-kind="master" tabindex="0" role="button" aria-label="Choose the master pile list" style="margin-top:12px"><b>Drop the master pile list here</b><br>or click to choose.</div>
+        <p class="ink2">Every pile of the site, loaded once.</p>
+        <div class="drop" data-kind="master" tabindex="0" role="button" aria-label="Choose the master pile list"><b>Drop the master pile list</b><span>or click to choose</span></div>
+        <details class="more"><summary>Accepted files</summary><p>Pile ID, Easting, Northing, pile type, colour (and tracker, block, section when available). Once loaded it can never be changed; a later file can only add new piles. A ground elevation column (such as Z LIDAR) is also recorded as LIDAR ground.</p></details>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>LIDAR / design ground</h2><span class="muted">optional</span></div>
-        <p class="ink2">Ground elevations used for piles that have not been surveyed yet, so whole trackers can be optimised before the survey is complete. A field survey always takes precedence.</p>
-        <div class="drop" data-kind="lidar" tabindex="0" role="button" aria-label="Choose a LIDAR file" style="margin-top:12px"><b>Drop a LIDAR file here</b><br>or click to choose.</div>
+      <div class="card import-card">
+        <div class="card-head"><h2>LIDAR ground</h2><span class="tag">optional</span></div>
+        <p class="ink2">Ground for piles not surveyed yet.</p>
+        <div class="drop" data-kind="lidar" tabindex="0" role="button" aria-label="Choose a LIDAR file"><b>Drop a LIDAR file</b><span>or click to choose</span></div>
+        <details class="more"><summary>How it is used</summary><p>Whole trackers can be optimised before the survey is complete. A field survey always takes precedence.</p></details>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Flood values</h2><span class="muted" id="flood-count">not loaded yet</span></div>
-        <p class="ink2">One value per pile, in metres: flood level (water elevation) or flood depth, as chosen in Settings &gt; Flood (level by default; a file with both columns gives the chosen one). Each pile's top is kept high enough for the modules to stay above the water with the required freeboard, which raises the bottom of the reveal window where needed. Pile ID plus a column such as Flood level, PHE or Flood depth. A newer file replaces older values.</p>
-        <div class="drop" data-kind="flood" tabindex="0" role="button" aria-label="Choose a flood file" style="margin-top:12px"><b>Drop a flood file here</b><br>or click to choose.</div>
+      <div class="card import-card">
+        <div class="card-head"><h2>Flood values</h2><span class="tag" id="flood-count">not loaded yet</span></div>
+        <p class="ink2">Flood level or depth per pile.</p>
+        <div class="drop" data-kind="flood" tabindex="0" role="button" aria-label="Choose a flood file"><b>Drop a flood file</b><span>or click to choose</span></div>
+        <details class="more"><summary>Accepted files</summary><p>Pile ID plus a column such as Flood level, PHE or Flood depth, in metres: level or depth as chosen in Settings &gt; Design limits &gt; Flood (a file with both columns gives the chosen one). Each pile's top is kept high enough for the modules to stay above the water with the required freeboard. A newer file replaces older values.</p></details>
       </div>
     </div>
     <input type="file" id="file-input" multiple accept=".csv,.txt,.prn,.xlsx,.xlsm,.xls,.ods" hidden>
     <div id="import-results" style="margin-top:16px"></div>
+    <div class="card" id="history-card" style="margin-top:16px">
+      <div class="card-head"><h2>Import history</h2><div class="head-tools"><span class="muted">Imports are never deleted; a voided survey stops being used.</span><span id="history-cols"></span></div></div>
+      <div class="table-wrap"><table id="imports-table"></table></div>
+    </div>
   </section>
 
   <section class="tab" id="tab-results" role="tabpanel">
     <div class="limits" id="results-limits" aria-label="Design limits from the settings"></div>
     <div class="filters">
-      <input type="search" id="f-search" placeholder="Search tracker or pile" aria-label="Search tracker or pile" style="min-width:220px">
+      <input type="search" id="f-search" placeholder="Search tracker or pile" aria-label="Search tracker or pile" class="search">
       <select id="f-block" aria-label="Block"></select>
       <select id="f-status" aria-label="Status"></select>
-      <label class="check"><input type="checkbox" id="f-stale"> Out of date only</label>
-      <label class="check"><input type="checkbox" id="f-flood"> Raised for flood</label>
-      <label class="check"><input type="checkbox" id="f-steep"> Steep (slope warning)</label>
+      <div class="chips" role="group" aria-label="Only trackers that are">
+        <label class="chip"><input type="checkbox" id="f-stale"> Out of date</label>
+        <label class="chip"><input type="checkbox" id="f-flood"> Raised for flood</label>
+        <label class="chip"><input type="checkbox" id="f-steep"> Steep</label>
+      </div>
       <span class="muted" id="f-count"></span>
+      <span id="tracker-cols" class="push"></span>
     </div>
     <div class="results">
       <div class="table-wrap"><table id="tracker-table"></table></div>
@@ -85,7 +105,8 @@
 
   <section class="tab" id="tab-map" role="tabpanel">
     <aside class="v3-side">
-      <h3 style="margin-bottom:14px">Map</h3>
+      <h3 class="side-title">Map</h3>
+      <div class="side-group-title">Colour</div>
       <label class="field"><span>Colour piles by</span>
         <select id="m2-mode">
           <option value="coverage">Survey coverage</option>
@@ -97,20 +118,24 @@
           <option value="colors">Pile colours (master list)</option>
         </select>
       </label>
+      <div class="side-group-title">Show</div>
+      <div class="toggles">
+        <label class="check"><input type="checkbox" id="m2-lines" checked> Tracker lines</label>
+        <label class="check"><input type="checkbox" id="m2-outlines" checked> Block outlines</label>
+        <label class="check"><input type="checkbox" id="m2-labels" checked> Block labels</label>
+      </div>
+      <div class="side-group-title">Navigate</div>
       <label class="field"><span>Block</span><select id="m2-block"></select></label>
       <label class="field"><span>Go to tracker or pile</span>
         <input type="search" id="m2-find" list="v3-trackers" placeholder="Tracker or pile ID">
       </label>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="m2-lines" checked> Tracker lines</label>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="m2-outlines" checked> Block outlines</label>
-      <label class="check" style="margin-bottom:14px"><input type="checkbox" id="m2-labels" checked> Block labels</label>
       <div style="display:flex;gap:6px;margin-bottom:8px">
         <button class="btn" id="m2-in" aria-label="Zoom in" style="flex:1">+</button>
         <button class="btn" id="m2-out" aria-label="Zoom out" style="flex:1">−</button>
         <button class="btn" id="m2-fit" style="flex:2">Fit</button>
       </div>
       <button class="btn" id="m2-save" style="width:100%">Save as image</button>
-      <p class="muted" style="margin-top:14px;font-size:12.5px">Piles at their design positions, north up. Drag to move, scroll or pinch to zoom, double-click to zoom in. Click a pile for its details; click a legend line to hide or show it.</p>
+      <details class="more"><summary>How to use</summary><p>Piles at their design positions, north up. Drag to move, scroll or pinch to zoom, double-click to zoom in. Click a pile for its details; click a legend line to hide or show it.</p></details>
     </aside>
     <div class="v3-main" id="m2-main">
       <div class="v3-legend" id="m2-legend"></div>
@@ -120,7 +145,8 @@
 
   <section class="tab" id="tab-view3d" role="tabpanel">
     <aside class="v3-side">
-      <h3 style="margin-bottom:14px">3D view</h3>
+      <h3 class="side-title">3D view</h3>
+      <div class="side-group-title">Colour</div>
       <label class="field"><span>Colour piles by</span>
         <select id="v3-color">
           <option value="status">Tracker status</option>
@@ -140,18 +166,22 @@
           <option value="none">Hidden</option>
         </select>
       </label>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="v3-wire"> Mesh edges</label>
-      <label class="check" style="margin-bottom:14px" title="Translucent surface at the flood water level, where flood values exist"><input type="checkbox" id="v3-water" checked> Flood water surface</label>
+      <div class="side-group-title">Show</div>
+      <div class="toggles">
+        <label class="check"><input type="checkbox" id="v3-wire"> Mesh edges</label>
+        <label class="check" title="Translucent surface at the flood water level, where flood values exist"><input type="checkbox" id="v3-water" checked> Flood water surface</label>
+      </div>
       <label class="field"><span>Vertical exaggeration: <b id="v3-ex-label">3×</b></span>
         <input type="range" id="v3-ex" min="1" max="20" step="1" value="3">
       </label>
+      <div class="side-group-title">Navigate</div>
       <label class="field"><span>Block</span><select id="v3-block"></select></label>
       <label class="field"><span>Go to tracker</span>
         <input type="search" id="v3-find" list="v3-trackers" placeholder="Tracker ID">
         <datalist id="v3-trackers"></datalist>
       </label>
       <button class="btn" id="v3-fit" style="width:100%">Fit view</button>
-      <p class="muted" style="margin-top:14px;font-size:12.5px">Drag to rotate, right-drag to pan, scroll to zoom. Click a pile for its details.</p>
+      <details class="more"><summary>How to use</summary><p>Drag to rotate, right-drag to pan, scroll to zoom. Click a pile for its details.</p></details>
     </aside>
     <div class="v3-main" id="v3-main">
       <div class="v3-legend" id="v3-legend"></div>
@@ -159,48 +189,48 @@
     </div>
   </section>
 
-  <section class="tab" id="tab-history" role="tabpanel">
-    <div class="card-head"><h2>Import history</h2><span class="muted">Imports are never deleted. Voiding a survey stops its elevations being used and re-optimises the trackers it touched.</span></div>
-    <div class="table-wrap"><table id="imports-table"></table></div>
-  </section>
 
   <section class="tab" id="tab-settings" role="tabpanel">
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="Settings sections">
+        <button type="button" data-group="limits" aria-current="true"><b>Design limits</b><small>Reveal, angle, flood, set-out</small></button>
+        <button type="button" data-group="survey"><b>Survey import</b><small>Matching, watch folder</small></button>
+        <button type="button" data-group="outputs"><b>Outputs</b><small>Installers' files, ArcGIS</small></button>
+        <button type="button" data-group="database"><b>Database</b><small>Backup, shared database</small></button>
+      </nav>
+      <div class="settings-body">
     <form id="settings-form" class="stack">
-      <div class="card">
-        <div class="card-head"><h2>Tracker &amp; reveal</h2><span class="muted">Changing these re-optimises every tracker.</span></div>
+      <div class="card" data-group="limits">
+        <div class="card-head"><h2>Tracker &amp; reveal</h2><span class="tag">re-optimises every tracker</span></div>
         <div class="settings-grid" id="settings-opt"></div>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Survey matching</h2><span class="muted">How survey points are matched to piles and checked.</span></div>
-        <div class="settings-grid" id="settings-match"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Flood</h2><span class="muted">Changing these re-optimises every tracker.</span></div>
+      <div class="card" data-group="limits">
+        <div class="card-head"><h2>Flood</h2><span class="tag">re-optimises every tracker</span></div>
         <div class="settings-grid">
           <label class="field"><span>Flood values used</span>
             <select name="flood_mode">
               <option value="elevation">Flood level (water elevation, same datum as the ground)</option>
               <option value="depth">Flood depth above the ground</option>
             </select>
-            <small>Level is recommended: it does not depend on the ground, which moves away from the LIDAR the flood study used. A file with both columns: the chosen one is read.</small>
+            <small>Level is recommended: it does not depend on the ground, which moves away from the LIDAR the flood study used.</small>
           </label>
           <label class="field"><span>Pile height of reference (m)</span>
             <input type="number" step="any" min="0" name="flood_pile_height_m" required>
-            <small>Height of the top of pile above the ground for which the module clearance below is given (minimum pile height).</small>
+            <small>Minimum pile height, for which the module clearance is given.</small>
           </label>
           <label class="field"><span>Module clearance at that height (m)</span>
             <input type="number" step="any" min="0" name="flood_module_clearance_m" required>
-            <small>Lowest module edge above the ground with the pile at the reference height.</small>
+            <small>Lowest module edge above the ground.</small>
           </label>
           <label class="field"><span>Freeboard above the flood level (m)</span>
             <input type="number" step="any" min="0" name="flood_freeboard_m" required>
-            <small>Required gap between the lowest module edge and the flood level.</small>
+            <small>Gap between the lowest module edge and the water.</small>
           </label>
         </div>
-        <p class="ink2" id="flood-rule" style="margin-top:10px"></p>
+        <p class="rule" id="flood-rule"></p>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Set-out</h2><span class="muted">New pile positions after optimisation.</span></div>
+      <div class="card" data-group="limits">
+        <div class="card-head"><h2>Set-out</h2><span class="tag">new pile positions</span></div>
         <div class="settings-grid">
           <label class="check" style="align-self:start"><input type="checkbox" name="fixed_spans">
             <span>Keep the distance between piles along the torque tube fixed</span></label>
@@ -208,39 +238,16 @@
             <input type="number" step="any" min="0" name="shift_warn_m" required>
           </label>
         </div>
-        <p class="muted" style="margin-top:10px;font-size:12.5px">The layout's distance between two piles is the torque-tube span length. Where the tops differ in height, the span covers less ground, so piles move along the tracker towards the motor pile, which stays at its design position. The tracker is then re-optimised and re-checked at the new positions.</p>
+        <details class="more"><summary>How set-out works</summary><p>The layout's distance between two piles is the torque-tube span length. Where the tops differ in height, the span covers less ground, so piles move along the tracker towards the motor pile, which stays at its design position. The tracker is then re-optimised and re-checked at the new positions.</p></details>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>ArcGIS export</h2><span class="muted">The <b>ArcGIS</b> button (top right) downloads a GeoPackage.</span></div>
-        <div class="settings-grid">
-          <label class="field"><span>Coordinate system of Easting / Northing (EPSG code)</span>
-            <input type="number" step="1" min="1024" name="epsg" placeholder="e.g. 7856">
-            <small>7856 = GDA2020 / MGA zone 56, 28356 = GDA94 / MGA zone 56, 326xx / 327xx = WGS 84 / UTM north / south, 2154 = Lambert-93. Without it, ArcGIS asks for the coordinate system.</small>
-          </label>
-        </div>
+      <div class="card" data-group="survey">
+        <div class="card-head"><h2>Survey matching</h2><span class="tag">checks on import</span></div>
+        <div class="settings-grid" id="settings-match"></div>
       </div>
-      <div class="card">
-        <div class="card-head"><h2>Installers' files</h2><span class="muted">Written to the shared folder (see Shared database below).</span></div>
-        <div class="settings-grid">
-          <label class="check" style="align-self:start"><input type="checkbox" name="auto_export">
-            <span>When a whole block is surveyed and its pile heights are calculated, write its Excel file for the installers</span></label>
-          <label class="field"><span>Folder, inside the shared folder</span>
-            <input type="text" name="auto_export_folder" required>
-            <small>Created if needed. Use / for a subfolder. Share just this folder with the installers in Google Drive.</small>
-          </label>
-          <label class="field"><span>Columns of the file (export profile)</span>
-            <select name="auto_export_profile"></select>
-            <small>Profiles are edited with Custom… (top right).</small>
-          </label>
-          <label class="check" style="align-self:start"><input type="checkbox" name="auto_export_require_ok">
-            <span>Wait until every tracker of the block is compliant or graded</span></label>
-        </div>
-        <p class="muted" style="margin-top:10px;font-size:12.5px">One file per block, written once. If a pile of the block is surveyed again and its position or height changes, a new revision is written next to it (rev 2, rev 3…); its About sheet says which revision it replaces.</p>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Watch folder</h2><span class="muted">Automatic import, for example from Trimble Connect Sync.</span></div>
+      <div class="card" data-group="survey">
+        <div class="card-head"><h2>Watch folder</h2><span class="tag">automatic import</span></div>
         <div id="watch-browser" class="browser-only" hidden>
-          <p class="ink2">Choose a folder on this computer, for example your Trimble Connect Sync folder. While this page is open, every new CSV / TXT / Excel file in it (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Works in Edge and Chrome.</p>
+          <p class="ink2">Choose a folder on this computer, for example your Trimble Connect Sync folder. While this page is open, every new CSV / TXT / Excel file in it is imported as a survey report. Edge and Chrome.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
             <button type="button" class="btn" id="watch-choose">Choose a folder…</button>
             <button type="button" class="btn" id="watch-resume" hidden>Resume watching</button>
@@ -249,17 +256,44 @@
         </div>
         <label class="field desktop-only"><span>Folder on this computer</span>
           <input type="text" id="watch-folder" placeholder="C:\Users\me\Trimble Connect\Project\Survey" style="width:100%">
-          <small>Every new CSV / TXT / Excel file that appears in this folder (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Leave empty to turn it off.</small>
+          <small>Every new CSV / TXT / Excel file in this folder (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Empty: off.</small>
         </label>
         <div id="watch-status" style="margin-top:12px"></div>
       </div>
-      <div style="display:flex;gap:8px">
+      <div class="card" data-group="outputs">
+        <div class="card-head"><h2>Installers' files</h2><span class="tag">in the shared folder</span></div>
+        <div class="settings-grid">
+          <label class="check" style="align-self:start"><input type="checkbox" name="auto_export">
+            <span>Write a block's Excel file for the installers once it is surveyed and calculated</span></label>
+          <label class="check" style="align-self:start"><input type="checkbox" name="auto_export_require_ok">
+            <span>Wait until every tracker of the block is compliant or graded</span></label>
+          <label class="field"><span>Folder, inside the shared folder</span>
+            <input type="text" name="auto_export_folder" required>
+            <small>Created if needed; / for a subfolder. Share just this folder with the installers.</small>
+          </label>
+          <label class="field"><span>Columns of the file (export profile)</span>
+            <select name="auto_export_profile"></select>
+            <small>Profiles are edited with Export &gt; Excel, custom.</small>
+          </label>
+        </div>
+        <details class="more"><summary>Revisions</summary><p>One file per block, written once. If a pile of the block is surveyed again and its position or height changes, a new revision is written next to it (rev 2, rev 3…); its About sheet says which revision it replaces.</p></details>
+      </div>
+      <div class="card" data-group="outputs">
+        <div class="card-head"><h2>ArcGIS export</h2><span class="tag">Export &gt; ArcGIS / QGIS</span></div>
+        <div class="settings-grid">
+          <label class="field"><span>Coordinate system of Easting / Northing (EPSG code)</span>
+            <input type="number" step="1" min="1024" name="epsg" placeholder="e.g. 7856">
+            <small>7856 = GDA2020 / MGA 56, 28356 = GDA94 / MGA 56, 326xx / 327xx = WGS 84 / UTM. Without it, ArcGIS asks for it.</small>
+          </label>
+        </div>
+      </div>
+      <div class="save-bar" data-group="limits survey outputs">
         <button class="btn primary" type="submit">Save settings</button>
-        <button class="btn" type="button" id="settings-defaults">Restore defaults</button>
+        <button class="btn ghost" type="button" id="settings-defaults">Restore defaults</button>
       </div>
     </form>
-    <div class="card" style="margin-top:16px" id="db-card">
-      <div class="card-head"><h2>Database</h2><span class="muted" id="db-where"></span></div>
+    <div class="card" data-group="database" id="db-card">
+      <div class="card-head"><h2>Database</h2><span class="muted mono" id="db-where"></span></div>
       <p class="ink2" id="db-help"></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
         <a class="btn" href="api/backup.db" download>Download a copy</a>
@@ -268,9 +302,11 @@
       </div>
       <input type="file" id="db-file" accept=".db,.sqlite,.sqlite3" hidden>
     </div>
-    <div class="card" style="margin-top:16px" id="share-card">
+    <div class="card" data-group="database" id="share-card">
       <div class="card-head"><h2>Shared database</h2><span id="share-pill"></span></div>
       <div id="share-body"></div>
+    </div>
+      </div>
     </div>
   </section>
 </main>
