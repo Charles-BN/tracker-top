@@ -2315,7 +2315,7 @@ mod tests {
         "/../../testdata/sample_block01_synthetic.csv"
     ));
 
-    fn loaded() -> Store {
+    pub(super) fn loaded() -> Store {
         let mut s = Store::open_in_memory().unwrap();
         let rep = s
             .import_file(Kind::Master, "piles.csv", SAMPLE, None, "test")
@@ -3231,5 +3231,38 @@ mod tests {
         set.slope_warn_pct = 9.0;
         s.set_settings(&set).unwrap();
         assert_eq!(s.summary().unwrap().steep_trackers, 0);
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::tests::loaded;
+    use super::*;
+
+    #[test]
+    fn survey_progress_counts_first_survey_per_pile() {
+        let mut s = loaded();
+        let st = s.state().unwrap();
+        let line = |p: &crate::store::PileState, dz: f64| {
+            format!("{},{},{},{:.3}\n", p.pile_id, p.easting, p.northing, p.z.unwrap() + dz)
+        };
+        let (a, b) = (&st.piles[0], &st.piles[1]);
+        let one = line(a, 0.1);
+        let two = format!("{}{}", line(a, 0.2), line(b, 0.1));
+        for (name, text, date) in [("s1.csv", &one, "2026-11-02"), ("s2.csv", &two, "2026-11-05")] {
+            let rep = s
+                .import_file(Kind::Survey, name, text.as_bytes(), Some(date), "t")
+                .unwrap();
+            assert!(rep.accepted);
+        }
+        let p = s.survey_progress().unwrap();
+        assert_eq!(p.block_piles.values().sum::<u32>() as usize, st.piles.len());
+        let days: Vec<(&str, u32)> = p
+            .days
+            .iter()
+            .map(|d| (d.date.as_str(), d.by_block.values().sum()))
+            .collect();
+        // Pile a counts on its first day only.
+        assert_eq!(days, vec![("2026-11-02", 1), ("2026-11-05", 1)]);
     }
 }

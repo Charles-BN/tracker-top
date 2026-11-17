@@ -1,6 +1,7 @@
 import { renderProfile, isMotorPile } from './profile.js';
 import { createSync, folderAccessSupported } from './sync.js';
 import { visibleColumns, headCells, columnsButton } from './columns.js';
+import { renderPlots } from './plots.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -400,7 +401,10 @@ $('#sync-chip').addEventListener('click', async () => {
   if (sync?.state.phase === 'needs-permission') {
     try { await sync.reconnect(); } catch (e) { toast(e.message, true); }
   } else {
-    show('settings');
+    settingsGroup = 'database';
+    await show('settings');
+    showSettingsGroup('database');
+    $('#share-card')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 });
 
@@ -907,6 +911,13 @@ function showPileInfo(i, panel = '#v3-info') {
 
 let map = null;
 
+renderers.plots = async () => {
+  const data = await api('GET', 'api/progress');
+  plots?.dispose();
+  plots = renderPlots($('#tab-plots'), data);
+};
+let plots = null;
+
 renderers.map = async () => {
   const [state, sum] = await Promise.all([loadState(), loadSummary()]);
   if (!map) {
@@ -1404,7 +1415,11 @@ async function poll() {
     },
     exported: (text) => toast(text),
   });
-  sync.onUpdate(() => {
+  let shownError = '';
+  sync.onUpdate((st) => {
+    // A new sync problem: say why at once (the chip only says "Sync problem").
+    if (st.phase === 'error' && st.message && st.message !== shownError) toast(`Shared database: ${st.message}`, true);
+    if (st.phase === 'error') shownError = st.message; else if (st.phase === 'idle') shownError = '';
     renderSyncChip();
     renderShareSummary();
     if (current === 'settings') renderShareCard();

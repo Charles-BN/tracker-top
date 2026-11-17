@@ -86,7 +86,7 @@ Run `tracker-top` (double-click on Windows). It creates `tracker-top.db` in the 
 
 Tabs: *Overview* (share of trackers with a valid top of pile, ground elevations, **average
 reveal**, a "to look at" list that opens the matching trackers in Results, progress by block,
-last activity), *Results*, **Map** (2D plan, see below), *3D*, *Import* (drop zones and the
+last activity), *Results*, **Map** (2D plan, see below), *3D*, **Plots** (see below), *Import* (drop zones and the
 import history) and *Settings*, in four sections: **Design limits** (reveal window, angle limit,
 rounding, flood, set-out), **Survey import** (matching tolerances, watch folder), **Outputs**
 (installers' files, ArcGIS) and **Database** (backup, shared database).
@@ -378,6 +378,19 @@ tops. Colour piles by tracker status, angle change, reveal, cut/fill, elevation 
 or pile type in the site colours of the master list's Color column (one colour per type);
 translucent flood water surface; adjustable vertical exaggeration; filter by block; go to a
 tracker; click a pile for its details. Click legend entries to hide or show a category.
+
+### Plots
+
+**Survey progress**: the piles with a field-survey elevation over time (each pile counts once, on
+its first survey date: the date in the file name or its date column, else the import day; voided
+imports are left out), for all blocks or one, with the piles surveyed per week below and a table.
+
+The **provisional curve** continues from the last survey day at the **recent pace**: the piles
+surveyed over the last 2, 4 or 8 weeks (or the whole survey) divided by the calendar days of that
+period, so weekends, rain and stops count as they did. It gives a provisional finish date; the
+shaded **range** uses the slowest and the fastest full week of the period (at least two full weeks
+needed). A **target finish** date adds the pace needed to finish on that day, piles per week. The
+choices are kept in this browser.
 
 ### Options
 

@@ -375,6 +375,7 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
             ok(json!({ "profiles": store.export_profiles().map_err(bad)? }))
         }
         ("GET", "blocks") => ok(json!(store.block_status().map_err(bad)?)),
+        ("GET", "progress") => ok(json!(store.survey_progress().map_err(bad)?)),
         ("GET", "blocks/outlines") => ok(json!(crate::outline::block_outlines(
             &store.state().map_err(bad)?
         ))),
