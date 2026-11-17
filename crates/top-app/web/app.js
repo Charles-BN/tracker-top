@@ -1,6 +1,7 @@
 import { renderProfile, isMotorPile } from './profile.js';
 import { createSync, folderAccessSupported } from './sync.js';
 import { visibleColumns, headCells, columnsButton } from './columns.js';
+import { renderPlots } from './plots.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -909,6 +910,13 @@ function showPileInfo(i, panel = '#v3-info') {
 // ---------------------------------------------------------------- map
 
 let map = null;
+
+renderers.plots = async () => {
+  const data = await api('GET', 'api/progress');
+  plots?.dispose();
+  plots = renderPlots($('#tab-plots'), data);
+};
+let plots = null;
 
 renderers.map = async () => {
   const [state, sum] = await Promise.all([loadState(), loadSummary()]);

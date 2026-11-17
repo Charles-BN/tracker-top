@@ -525,3 +525,40 @@ details.more p { margin-top: 6px; line-height: 1.5; }
 .side-group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--grid); }
 .side-title + .side-group-title { border-top: 0; padding-top: 0; margin-top: 10px; }
 .toggles { display: flex; flex-direction: column; gap: 7px; margin-bottom: 12px; }
+
+/* ---------------------------------------------------------------- plots */
+.plot-card { display: flex; flex-direction: column; gap: 14px; }
+.plot-head { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: space-between; align-items: flex-end; }
+.plot-head h2 { margin-bottom: 4px; }
+.plot-head p { max-width: 60ch; }
+.plot-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; }
+.plot-filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
+.plot-stats { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.plot-stats .of { font-size: 13px; font-weight: 500; color: var(--muted); }
+.plot-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--ink-2); }
+.plot-key { display: inline-flex; align-items: center; gap: 6px; }
+.plot { position: relative; min-width: 0; }
+.plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+.plot .empty { padding: 40px 10px; }
+.plot-sub { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-top: 6px; }
+.plot-notes:empty { display: none; }
+.plot-grid line { stroke: var(--grid); stroke-width: 1; }
+.plot-axis { stroke: var(--axis); stroke-width: 1; }
+.plot-tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.plot-note { paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; fill: var(--muted); font-size: 11px; }
+.plot-label { paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; fill: var(--ink-2); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.plot-total { stroke: var(--axis); stroke-width: 1.5; stroke-dasharray: 2 4; }
+.plot-today { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.plot-actual { fill: none; stroke: var(--s1); stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
+.plot-actual-dot { fill: var(--s1); stroke: var(--surface); stroke-width: 2; }
+.plot-proj { fill: none; stroke: var(--s1); stroke-width: 2; stroke-dasharray: 6 5; stroke-linecap: round; }
+.plot-proj-dot { fill: var(--surface); stroke: var(--s1); stroke-width: 2; }
+.plot-band { fill: var(--band); stroke: none; }
+.plot-target { fill: none; stroke: var(--s2); stroke-width: 2; stroke-dasharray: 2 4; stroke-linecap: round; }
+.plot-target-dot { fill: var(--surface); stroke: var(--s2); stroke-width: 2; }
+.plot-proj.thin, .plot-target.thin { stroke-width: 1.5; }
+.plot-bar { fill: var(--s1); }
+.plot-bar.partial { fill: var(--band); stroke: var(--s1); stroke-width: 1; stroke-dasharray: 2 2; }
+.plot-cross { stroke: var(--ink-2); stroke-width: 1; }
+.plot-hover-dot { fill: var(--surface); stroke: var(--ink); stroke-width: 2; pointer-events: none; }
+.plot-tip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 7px 10px; font-size: 12.5px; line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums; }
