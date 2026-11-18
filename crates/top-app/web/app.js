@@ -309,7 +309,17 @@ renderers.overview = async () => {
   $('#blocks-cols').appendChild(columnsButton('blocks', BLOCK_COLS, drawBlocks));
   $('#blocks-table').addEventListener('click', (e) => {
     const tr = e.target.closest('tr[data-block]');
-    if (tr && !e.target.closest('a,button')) openResults({ block: tr.dataset.block });
+    if (tr && !e.target.closest('a,button,label,input')) openResults({ block: tr.dataset.block });
+  });
+  $('#blocks-table').addEventListener('change', (e) => {
+    const box = e.target.closest('[data-issue]');
+    if (!box) return;
+    const block = box.dataset.issue;
+    if (box.checked) { setIssued(block, true).catch((err) => { box.checked = false; toast(err.message, true); }); return; }
+    box.checked = true; // until confirmed
+    const aligned = cache.summary?.settings?.align_rows;
+    openDialog(`<h2>Untick block ${esc(block)}?</h2><p class="ink2" style="margin-top:8px">Block ${esc(block)} will no longer count as issued to the installers.${aligned ? ' Its tops may then change: they are aligned with the neighbouring rows again.' : ' With neighbouring rows aligned (Settings), its tops could then change.'}</p>`,
+      [['Cancel', null], ['Untick', async () => { await setIssued(block, false); }, 'danger']]);
   });
   $$('[data-go]', el).forEach((b) => b.addEventListener('click', () => {
     const g = b.dataset.go;
@@ -331,7 +341,17 @@ const BLOCK_COLS = [
   { key: 'AwaitingSurvey', label: 'Awaiting', cls: 'num', hidden: true, cell: (b) => int(b.counts.AwaitingSurvey || 0) },
   { key: 'reveal', label: 'Avg reveal (m)', cls: 'num', tip: "Mean reveal of the block's piles with a result", cell: (b) => (b.reveal_mean == null ? '–' : fmt(b.reveal_mean, 3)) },
   { key: 'installers', label: "Installers' file", tip: 'Excel file for the installers, written to the shared folder once the block is complete', cell: (b, inst) => installerCell(inst) },
+  { key: 'issued', label: 'Issued', tip: 'Tick once the block is issued to the installers: its tops then stay as they are when neighbouring rows are aligned', cell: (b, inst) => (inst ? `<label class="issue-tick" title="${inst.issued ? `Issued ${esc(inst.issued.at.slice(0, 10))} by ${esc(inst.issued.by)}` : 'Not issued'}"><input type="checkbox" data-issue="${esc(b.block)}"${inst.issued ? ' checked' : ''} aria-label="Block ${esc(b.block)} issued to the installers">${inst.issued ? `<span class="muted">${esc(inst.issued.at.slice(0, 10))}</span>` : ''}</label>` : '') },
 ];
+
+/** Tick or untick a block as issued to the installers. */
+async function setIssued(block, issued) {
+  const by = sync?.state.name || '';
+  const run = await api('PUT', 'api/blocks/issued', { block, issued, by });
+  toast(issued ? `Block ${block} marked as issued to the installers.` : `Block ${block} is no longer marked as issued.`);
+  if (run.run?.run_id) toast(runText(run.run));
+  await refresh();
+}
 
 /** Results tab with some filters set (from the Overview). */
 async function openResults(f) {
@@ -715,6 +735,7 @@ const TRACKER_COLS = [
   { key: 'n_flood_raised', label: 'Flood raised', cls: 'num', hidden: true, tip: 'Piles raised to stay above the flood level', sort: (t) => t.n_flood_raised ?? 0, cell: (t) => (t.n_flood ? t.n_flood_raised : '') },
   { key: 'max_shift', label: 'Max shift (m)', cls: 'num', hidden: true, tip: 'Largest set-out move along the tracker', sort: (t) => t.max_shift ?? -1, cell: (t) => (t.max_shift == null ? '' : fmt(t.max_shift, dc())) },
   { key: 'span_error', label: 'Span check (mm)', cls: 'num', hidden: true, tip: 'Largest difference between a span along the tube and its design length', sort: (t) => t.span_error ?? -1, cell: (t) => (t.span_error == null ? '' : (t.span_error * 1000).toFixed(1)) },
+  { key: 'max_row_dev', label: 'Off rows (cm)', cls: 'num', get hidden() { return !cache.summary?.settings?.align_rows; }, tip: 'Largest distance of a top from the line through the neighbouring rows (see Settings > Design limits > Neighbouring rows)', sort: (t) => Math.abs(t.max_row_dev ?? -1), cell: (t) => (t.max_row_dev == null ? '' : `${(Math.abs(t.max_row_dev) * 100).toFixed(0)}${t.aligned ? '' : ' <span class="muted" title="Not aligned">·</span>'}`) },
   { key: 'run_at', label: 'Result of', hidden: true, sort: (t) => t.run_at ?? '', cell: (t) => `<span class="muted">${esc(t.run_at?.slice(0, 16) ?? '')}</span>` },
 ];
 let trackerColsButton = false;
@@ -770,6 +791,7 @@ function pileCols(t) {
       const over = p.ang[i] != null && Math.abs(p.ang[i]) > settings.max_angle_deg + 0.001;
       return `<span${over ? ' class="bad-num"' : ''}>${fmt(p.ang[i], 3)}</span>${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}`;
     } },
+    { key: 'rdev', label: 'Off rows', group: 'Result', cls: 'num', hidden: !settings.align_rows, tip: 'Top minus the line through the neighbouring rows at this Northing (cm)', cell: (i) => (p.rdev[i] == null ? '' : (p.rdev[i] * 100).toFixed(0)) },
     { key: 'shift', label: 'Shift', group: 'Set-out', cls: 'num', when: p.shift[t.first_pile] != null, tip: 'Move along the tracker from the design position (m), to keep the torque-tube spans at their design length. Hover for the set-out coordinates.', cell: (i) => {
       const sh = p.shift[i];
       const big = sh != null && Math.abs(sh) > settings.shift_warn_m;
@@ -812,6 +834,7 @@ function renderDetail(t) {
         ${kv('Max angle change', `${fmt(t.max_angle_deg, 3)}°`)}
         ${kv('Max cut/fill', `${fmt(t.max_cut_fill, dc())} m`)}
         ${kv('Tube slope', `${t.steep ? '⚠ ' : ''}${fmt(t.tube_slope_pct, 2)} %`, t.steep ? ` class="warn-num" title="Above ${settings.slope_warn_pct}%: mean of the absolute slopes of the spans"` : ' title="Mean of the absolute slopes of the spans between the tops of pile"')}
+        ${t.max_row_dev != null ? kv('Off neighbouring rows', `${(Math.abs(t.max_row_dev) * 100).toFixed(0)} cm${t.aligned ? ' · aligned' : ''}`, ' title="Largest distance of a top from the line through the neighbouring rows"') : ''}
         ${kv('Result of', esc(t.run_at?.slice(0, 16) ?? '–'))}
       </div></div>
       ${t.anchor_pile ? `<div class="kv-group"><h4>Set-out</h4><div class="kv">
@@ -1264,6 +1287,7 @@ renderers.settings = async () => {
     floodRule();
     $('[name="epsg"]').value = v.epsg ?? '';
     $('[name="fixed_spans"]').checked = !!v.fixed_spans;
+    $('[name="align_rows"]').checked = !!v.align_rows;
     $('[name="shift_warn_m"]').value = v.shift_warn_m;
     $('[name="auto_export"]').checked = !!v.auto_export;
     $('[name="auto_export_folder"]').value = v.auto_export_folder;
@@ -1300,6 +1324,7 @@ $('#settings-form').addEventListener('submit', async (e) => {
   const epsg = $('[name="epsg"]').value.trim();
   settings.epsg = epsg ? Number(epsg) : null;
   settings.fixed_spans = $('[name="fixed_spans"]').checked;
+  settings.align_rows = $('[name="align_rows"]').checked;
   settings.shift_warn_m = Number($('[name="shift_warn_m"]').value);
   settings.auto_export = $('[name="auto_export"]').checked;
   settings.auto_export_folder = $('[name="auto_export_folder"]').value.trim();

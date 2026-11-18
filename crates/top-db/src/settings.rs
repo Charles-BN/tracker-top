@@ -15,6 +15,10 @@ pub enum FloodMode {
     Elevation,
 }
 
+/// Weight of the pull towards the neighbouring rows when `align_rows` is on,
+/// relative to keeping the nominal reveal (see `top_core::align`).
+pub const ALIGN_WEIGHT: f64 = 10.0;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -68,6 +72,10 @@ pub struct Settings {
     /// Warn on a tracker whose torque-tube slope (mean of the absolute slopes
     /// of its spans between the tops of pile, %) is above this.
     pub slope_warn_pct: f64,
+    /// Pull each row's tops towards the line through its neighbouring rows
+    /// (less shade between rows when the trackers backtrack); blocks ticked
+    /// as issued to the installers keep their tops.
+    pub align_rows: bool,
     /// Calculated values (tops, cut/fill, set-out positions) are rounded to
     /// this step (m): 0.01 = the centimetre; 0 keeps them exact. The limits
     /// are checked on the rounded values.
@@ -107,6 +115,7 @@ impl Default for Settings {
             shift_warn_m: 0.10,
             slope_warn_pct: 6.0,
             round_step: 0.01,
+            align_rows: false,
             auto_export: true,
             auto_export_folder: "For installers".into(),
             auto_export_profile: "Installers".into(),
@@ -138,12 +147,15 @@ impl Settings {
             grading_threshold: self.grading_threshold,
             fixed_spans: self.fixed_spans,
             round_step: self.round_step,
+            align_weight: if self.align_rows { ALIGN_WEIGHT } else { 0.0 },
             ..Params::default()
         }
     }
 
     /// The parameters that change optimisation results, as stable JSON. Part of
     /// every tracker's input signature, so editing them re-runs every tracker.
+    /// (Row alignment is not in it: it is marked on each result instead, so
+    /// that blocks issued to the installers keep theirs; see `Store::optimize`.)
     pub fn params_json(&self) -> String {
         serde_json::json!({
             "reveal_nominal": self.reveal_nominal,

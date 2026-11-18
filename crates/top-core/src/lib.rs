@@ -7,6 +7,7 @@
 //! [`qp::QpSolver`] trait so a different implementation (e.g. `clarabel`) can be
 //! swapped in later.
 
+pub mod align;
 pub mod csv;
 pub mod error;
 pub mod model;
@@ -16,10 +17,11 @@ pub mod qp;
 pub mod setout;
 
 pub use error::{Error, Result};
+pub use align::{Rows, align_all};
 pub use model::{Pile, Tracker, group_trackers, normalize_block};
 pub use optimize::{
     PileResult, TrackerResult, TrackerStatus, angle_diffs_deg, default_solver, optimize_all,
-    optimize_tracker,
+    optimize_tracker, optimize_tracker_aligned, par_map,
 };
 pub use params::Params;
 pub use qp::{AdmmSolver, Qp, QpSolution, QpSolver, QpStatus};

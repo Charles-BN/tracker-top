@@ -158,6 +158,7 @@ fn state_columns(store: &Store) -> Result<Value, String> {
         "flvl": col(&|p| opt(p.flood_level, 4)),
         "mintop": col(&|p| opt(p.min_top, 4)),
         "mta": col(&|p| json!(p.result.as_ref().is_some_and(|r| r.min_top_active))),
+        "rdev": col(&|p| opt(p.row_dev, 4)),
         "se": col(&|p| opt(p.result.as_ref().and_then(|r| r.set_easting), 4)),
         "sn": col(&|p| opt(p.result.as_ref().and_then(|r| r.set_northing), 4)),
         "shift": col(&|p| opt(p.result.as_ref().and_then(|r| r.shift), 4)),
@@ -375,6 +376,20 @@ fn route(store: &mut Store, host: &Host, req: &Request) -> Routed {
             ok(json!({ "profiles": store.export_profiles().map_err(bad)? }))
         }
         ("GET", "blocks") => ok(json!(store.block_status().map_err(bad)?)),
+        ("PUT", "blocks/issued") => {
+            #[derive(Deserialize)]
+            struct Body {
+                block: String,
+                issued: bool,
+                #[serde(default)]
+                by: String,
+            }
+            let b: Body = json_body(req.body)?;
+            store.set_block_issued(&b.block, b.issued, &b.by).map_err(bad)?;
+            // With aligned rows, ticking or unticking changes what may move.
+            let run = store.optimize(false, "issued blocks changed", threads).map_err(bad)?;
+            ok(json!({ "run": run }))
+        }
         ("GET", "progress") => ok(json!(store.survey_progress().map_err(bad)?)),
         ("GET", "blocks/outlines") => ok(json!(crate::outline::block_outlines(
             &store.state().map_err(bad)?

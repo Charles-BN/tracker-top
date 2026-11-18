@@ -219,6 +219,44 @@ tracker is 11.5 mm (median), 98 mm (95th percentile) and 215 mm at most (steep 1
 The Excel/CSV exports carry `Set-out Easting`, `Set-out Northing`, `Shift Along Tracker (m)`, and
 the ArcGIS export draws piles at their set-out position.
 
+### Neighbouring rows (alignment)
+
+When the trackers backtrack in the early morning and late evening, a row that sits lower than the
+line through its two neighbours (a *kink*), or whose height step to a neighbour changes along the
+row, gets shade the backtracking cannot avoid; a steady slope across the rows is fine (the tracker
+controller allows for it). **Settings → Design limits → Neighbouring rows → Align each row with its
+neighbouring rows** (off by default) pulls every top towards the line through the rows on either
+side at the same Northing (beside one row only: parallel to it):
+
+- inside every limit (reveal window, angle change, cut/fill, flood): the target is aimed at least
+  2 cm inside the reveal window, so the pull never adds cut/fill, and a tracker whose result would
+  get worse (cut/fill, a limit) gets a weaker pull, or none;
+- rows are the tracker columns one row pitch apart (found from the data: 5.40 m here); a road gap
+  breaks the neighbourhood; neighbours across a block boundary count;
+- rows are solved again in up to 8 rounds while their neighbours move; after an import only the
+  trackers around the new data move, and a tracker whose tops change by less than a millimetre
+  keeps its result (so no new revision of an installers' file for nothing).
+
+**Issued to installers**: tick a block in the Overview's *Progress by block* table (*Issued*
+column) once its heights have gone to the installers. An issued block **keeps its tops**: it is
+not moved for its neighbours, not by *Optimise* with Shift, nor when alignment is switched on or
+off; the rows around it align to it. Its trackers are only optimised again when their own
+elevations or settings change (a new survey of its piles; then the next revision of its file is
+written as before). Unticking asks for confirmation. Ticks are shared with the other computers
+(shared database).
+
+Results: the **Off rows (cm)** column (shown when alignment is on; Columns button otherwise) gives
+each tracker's largest distance of a top from the line through its neighbours, and the pile table
+gives it per pile.
+
+On the project (LIDAR ground, 2,792 trackers): kinks across three rows go from 2.0 / 7.0 / 17 cm
+(median / 90th / 99th percentile) to 1.0 / 3.0 / 7 cm (1 cm is the centimetre rounding), the
+height step changing along a pair of rows from 2.3 / 7.8 / 16.8 cm to 1.5 / 5.6 / 12.8 cm; the
+reveals spread more (standard deviation 1.7 cm → 4.4 cm, mean 1.45 m, 0.2 % of piles at a window
+limit) and the statuses do not change (2,788 compliant, 4 graded). Switching it on aligns the
+whole site in about 2 s on four cores (7.6 s on one; the browser version works in the
+background).
+
 ### ArcGIS
 
 The **ArcGIS** button downloads a GeoPackage (`.gpkg`, OGC standard) with two layers:

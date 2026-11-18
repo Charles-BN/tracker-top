@@ -12,6 +12,8 @@
 --              Append-only. The current result of a tracker is its latest run.
 -- block_exports files sent to the installers, one row per block and revision.
 --              Append-only.
+-- block_issues  "issued to installers" ticks and unticks, one row per change;
+--              a block's state is its latest row. Append-only.
 --
 -- meta 'revision' changes, through the triggers at the end, whenever anything
 -- another computer should receive changes. Copies of the database on several
@@ -202,6 +204,21 @@ BEGIN SELECT RAISE(ABORT, 'the installer export log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS block_exports_no_delete BEFORE DELETE ON block_exports
 BEGIN SELECT RAISE(ABORT, 'the installer export log is append-only'); END;
 
+CREATE TABLE IF NOT EXISTS block_issues (
+    event_id INTEGER PRIMARY KEY,
+    uid      TEXT NOT NULL UNIQUE,
+    block    TEXT NOT NULL,
+    issued   INTEGER NOT NULL,
+    at       TEXT NOT NULL,
+    by       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS block_issues_block ON block_issues (block, at);
+
+CREATE TRIGGER IF NOT EXISTS block_issues_no_update BEFORE UPDATE ON block_issues
+BEGIN SELECT RAISE(ABORT, 'the issued-to-installers log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS block_issues_no_delete BEFORE DELETE ON block_issues
+BEGIN SELECT RAISE(ABORT, 'the issued-to-installers log is append-only'); END;
+
 -- A new revision for every change worth sharing. Settings of this computer
 -- only (watch folder, sync state) do not count. (A plain UPDATE: SQLite applies
 -- the conflict rule of the statement that fires a trigger to the trigger's own
@@ -213,6 +230,8 @@ BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; 
 CREATE TRIGGER IF NOT EXISTS revision_run AFTER INSERT ON runs
 BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
 CREATE TRIGGER IF NOT EXISTS revision_block_export AFTER INSERT ON block_exports
+BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
+CREATE TRIGGER IF NOT EXISTS revision_block_issue AFTER INSERT ON block_issues
 BEGIN UPDATE meta SET value = lower(hex(randomblob(8))) WHERE key = 'revision'; END;
 CREATE TRIGGER IF NOT EXISTS revision_settings_insert AFTER INSERT ON meta
 WHEN NEW.key IN ('settings', 'export_profiles')
