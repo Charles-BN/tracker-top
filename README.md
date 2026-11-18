@@ -247,7 +247,7 @@ written as before). Unticking asks for confirmation. Ticks are shared with the o
 
 Results: the **Off rows (cm)** column (shown when alignment is on; Columns button otherwise) gives
 each tracker's largest distance of a top from the line through its neighbours, and the pile table
-gives it per pile.
+gives it per pile; the **Map** colours piles or trackers by it.
 
 On the project (LIDAR ground, 2,792 trackers): kinks across three rows go from 2.0 / 7.0 / 17 cm
 (median / 90th / 99th percentile) to 1.0 / 3.0 / 7 cm (1 cm is the centimetre rounding), the
@@ -394,6 +394,9 @@ The **Map** tab draws every pile in plan (design positions, north up), coloured 
   than LIDAR, red: higher);
 - **Installers' file** by block: sent, complete but not sent yet, not complete;
 - **Pile colours** from the master list (one colour per pile type, e.g. RED · SAP-7).
+- **Off neighbouring rows**, by pile or by tracker (its worst pile): distance of the top from the
+  line through the neighbouring rows, in bands (within 2 cm, 2–5, 5–10, over 10 cm); hovering a
+  pile says how far above or below (see *Neighbouring rows*).
 
 Each **block is outlined**: one line around all its piles, made only of straight segments along
 the trackers (north-south) and across them (east-west), 2 m beyond the end piles and half a row
