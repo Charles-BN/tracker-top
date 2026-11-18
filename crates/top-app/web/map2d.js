@@ -1,6 +1,6 @@
 // 2D map of the site: every pile in plan (design position), coloured by
-// survey coverage, survey date, tracker status, reveal, survey − LIDAR, or the
-// block's installers' file. Drawn on a canvas: the 37,000 piles of a site draw
+// survey coverage, survey date, tracker status, reveal, survey − LIDAR, the
+// block's installers' file, or the distance from the neighbouring rows. Drawn on a canvas: the 37,000 piles of a site draw
 // in a few milliseconds, so panning and zooming stay smooth.
 //
 // Colours follow the same reference palette as the 3D view (view3d.js):
@@ -33,7 +33,12 @@ export const MODES = {
   diff: 'Survey − LIDAR',
   installers: "Installers' file",
   colors: 'Pile colours',
+  rows: 'Off neighbouring rows (pile)',
+  rowsTracker: 'Off neighbouring rows (tracker)',
 };
+
+/** Bands of distance from the line through the neighbouring rows (m). */
+const ROW_BANDS = [[0.02, 'Within 2 cm'], [0.05, '2 – 5 cm'], [0.10, '5 – 10 cm'], [Infinity, 'Over 10 cm']];
 
 function hexRgb(h) {
   const n = parseInt(h.slice(1), 16);
@@ -46,6 +51,8 @@ function rampColor(stops, t) {
   const a = hexRgb(stops[i]), b = hexRgb(stops[i + 1]);
   return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(',')})`;
 }
+/** A pile's distance from the line through its neighbouring rows, in words. */
+const rowText = (v) => (Math.abs(v) < 0.005 ? 'in line with the neighbouring rows' : `${Math.round(Math.abs(v) * 100)} cm ${v > 0 ? 'above' : 'below'} the neighbouring rows`);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const dayNumber = (iso) => (iso ? Math.floor(Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) / 86400000) : NaN);
@@ -211,6 +218,15 @@ export class Map2D {
         c.label = `${c.label} · ${[...c.types].sort().join(', ')}`;
         delete c.types;
       }
+    } else if (this.mode === 'rows' || this.mode === 'rowsTracker') {
+      // One hue, the furthest the most visible: darkest on a light surface,
+      // lightest on a dark one.
+      const steps = dark ? [BLUE[6], BLUE[4], BLUE[2], BLUE[0]] : [BLUE[0], BLUE[2], BLUE[4], BLUE[6]];
+      classes = ROW_BANDS.map(([, label], k) => ({ label, color: steps[k] }));
+      classes.push({ label: 'No neighbouring row, or no result', color: pal.dim });
+      const band = (v) => (v == null ? ROW_BANDS.length : ROW_BANDS.findIndex(([lim]) => Math.abs(v) <= lim));
+      const worst = this.mode === 'rowsTracker' ? this.state.trackers.map((t) => t.max_row_dev) : null;
+      for (let i = 0; i < n; i++) cls[i] = band(worst ? worst[this.data.trackerOf[i]] : p.rdev[i]);
     } else if (this.mode === 'installers') {
       const inst = new Map((this.summary.installers || []).map((b) => [b.block, b]));
       classes = [
@@ -598,6 +614,8 @@ export class Map2D {
       diff: p.zs[i] != null && p.zl[i] != null ? `survey − LIDAR ${(p.zs[i] - p.zl[i]).toFixed(2)} m` : 'not surveyed',
       installers: c.label,
       colors: `${p.type[i] || '–'} · ${p.color[i] || 'no colour'}`,
+      rows: p.rdev[i] == null ? c.label : rowText(p.rdev[i]),
+      rowsTracker: t.max_row_dev == null ? c.label : `tracker's worst ${Math.round(Math.abs(t.max_row_dev) * 100)} cm${p.rdev[i] == null ? '' : ` · this pile ${rowText(p.rdev[i])}`}`,
     }[this.mode];
     this.tip.innerHTML = `<b>${esc(p.id[i])}</b><div class="row"><span>Tracker</span><span>${esc(t.tracker)}</span></div><div class="row"><span>Block</span><span>${esc(p.block[i] || '–')}</span></div><div class="row"><span><span class="sw-dot" style="display:inline-block;background:${c.color}"></span></span><span>${esc(detail)}</span></div>`;
     this.tip.hidden = false;

@@ -913,6 +913,7 @@ function showPileInfo(i, panel = '#v3-info') {
     ${row('Reveal', fmt(p.rev[i], d))}
     ${p.flood[i] != null ? row('Flood water level', `${fmt(p.flvl[i], d)} <span class="muted">value ${fmt(p.flood[i], 2)}</span>`) + row('Lowest allowed top', `${fmt(p.mintop[i], d)}${p.mta[i] ? ' <span class="muted">raised</span>' : ''}`) : ''}
     ${row('Angle change', `${fmt(p.ang[i], 3)}° <span class="muted">/ ${s.max_angle_deg}°</span>`)}
+    ${p.rdev[i] != null ? row('Off neighbouring rows', `${(p.rdev[i] * 100).toFixed(0)} cm <span class="muted">${p.rdev[i] > 0 ? 'above' : p.rdev[i] < 0 ? 'below' : ''}</span>`) : ''}
     <div style="display:flex;gap:6px;margin-top:8px">
       <button class="btn small" data-open style="flex:1">Open in Results</button>
       ${panel === '#v3-info' ? '' : '<button class="btn small" data-3d style="flex:1">Show in 3D</button>'}
