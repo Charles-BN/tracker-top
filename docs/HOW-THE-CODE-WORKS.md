@@ -658,6 +658,35 @@ its results with their numbers, and they are put back in order at the end. With 
 browser version) it is a plain loop. The 2,792 trackers of the project take about 0.2 s on two
 cores.
 
+### 4.8b Aligning neighbouring rows (`align.rs`)
+
+Optional (setting *Align each row with its neighbouring rows*). `Rows::new` takes the positions of
+every tracker's piles, works out each tracker's axis (mean Easting) and the **row pitch** (median
+distance to the nearest tracker east of it that runs beside it), and finds a tracker's neighbours:
+the trackers one pitch east and west (±25 %) that cover the same Northings.
+
+`Rows::targets(i, tops)` gives each pile of tracker `i` a target top from the current tops of the
+others, interpolated at the pile's Northing: halfway between the west and the east row, or, with
+one neighbour only, that neighbour's profile moved by this row's mean height difference to it
+(the rows run parallel). `build_qp` adds `w * (y_i - t_i)^2` for each pile with a target (`w =
+Params::align_weight`, 10), the target first brought 2 cm inside the reveal window.
+`optimize_tracker_aligned` keeps the aligned result unless it is worse than the tracker on its
+own (cut/fill, a broken limit): then it tries a pull four times weaker, and else returns the
+tracker's own optimum.
+
+Because a row's target depends on its neighbours, `align_all` works in **rounds**: all the
+trackers to redo are solved (in parallel, `par_map`) from the tops of the round before; any
+whose tops moved by more than 5 mm puts its neighbours (and itself) in the next round.
+
+```mermaid
+flowchart LR
+  A["tops of every tracker<br/>(fixed ones never move)"] --> B["targets from the<br/>rows on either side"]
+  B --> C["solve the trackers of this round<br/>with the pull (par_map)"]
+  C --> D{"moved more<br/>than 5 mm?"}
+  D -->|yes| E["it and its neighbours<br/>go in the next round"] --> B
+  D -->|no| F["settled"]
+```
+
 ### 4.9 The command-line tool (`top-cli`, `csv.rs`)
 
 `top` reads a CSV of piles (`csv::read_piles`), groups them, runs `optimize_all` and writes one CSV
@@ -899,6 +928,17 @@ flowchart TD
 The current result of a tracker is simply its **latest run** (`latest_runs`). Old results are
 never deleted, so the history of every tracker is kept.
 
+**With row alignment** a tracker's result also depends on its neighbours, so `optimize` does more
+(see 4.8b). A result made with alignment has `:a` after its signature, so switching alignment on
+or off makes the movable trackers out of date. Trackers of blocks ticked as **issued to the
+installers** (`block_issues`, see 5.9) only compare the part before `:a`: they keep their result
+until their own inputs change, whatever the alignment setting, and are never moved for their
+neighbours nor by `force`. The steps: trackers with new inputs are first solved on their own (a
+starting point); issued ones with new inputs are solved once, aligned to the rows around them,
+and then stay fixed; then `align_all` runs on the movable trackers to redo plus the neighbours of
+anything that changed. A tracker solved again only because a neighbour moved keeps its stored
+result if no top changed by 0.5 mm or more.
+
 ### 5.7 The current state and the summary (`state`, `summary`)
 
 `state()` puts everything together for the page and the exports: a `PileState` per pile
@@ -941,6 +981,12 @@ flowchart TD
   F -->|yes| G["nothing to do"]
   F -->|no| H["needs export: revision = last + 1"]
 ```
+
+**Issued to installers** ticks are rows of `block_issues` (`set_block_issued`), append-only:
+each tick or untick is a new row with a random `uid`, the time and the computer's name, and a
+block's state is its latest row (`issued_blocks`). When two computers share the database, the
+rows are merged as a union by `uid` (`sync.rs`). `BlockStatus::issued` carries the state to the
+page.
 
 `block_workbook(block)` builds the file with the installers' profile and an *About* sheet;
 `record_block_export` writes a row in `block_exports` once the page has saved the file in the

@@ -22,6 +22,13 @@ pub struct BlockExport {
     pub exported_by: String,
 }
 
+/// A block ticked as issued to the installers.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Issued {
+    pub at: String,
+    pub by: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct BlockStatus {
     pub block: String,
@@ -43,6 +50,9 @@ pub struct BlockStatus {
     /// Revision number the next file gets.
     pub next_revision: i64,
     pub reveal_mean: Option<f64>,
+    /// Ticked as issued to the installers (its tops are then kept as they are
+    /// when neighbouring rows are aligned).
+    pub issued: Option<Issued>,
 }
 
 /// Fingerprint of a block's results: pile, set-out position and top, to the
@@ -95,6 +105,61 @@ pub fn file_name(block: &str, revision: i64) -> String {
 }
 
 impl Store {
+    /// Blocks currently ticked as issued to the installers: the latest tick or
+    /// untick of each block decides.
+    pub fn issued_blocks(&self) -> Result<std::collections::HashMap<String, Issued>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT block, issued, at, by FROM block_issues ORDER BY at, event_id")
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (block, issued, at, by) = row.map_err(|e| e.to_string())?;
+            if issued {
+                out.insert(block, Issued { at, by });
+            } else {
+                out.remove(&block);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Tick (or untick) `block` as issued to the installers.
+    pub fn set_block_issued(&mut self, block: &str, issued: bool, by: &str) -> Result<()> {
+        let block = top_core::normalize_block(block);
+        if block.is_empty() {
+            return Err("no block given".into());
+        }
+        let known: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM piles WHERE block = ?1", [&block], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if known == 0 {
+            return Err(format!("there is no block {block}"));
+        }
+        if self.issued_blocks()?.contains_key(&block) == issued {
+            return Ok(());
+        }
+        let by = if by.trim().is_empty() { "this computer" } else { by.trim() };
+        self.conn
+            .execute(
+                "INSERT INTO block_issues (uid, block, issued, at, by) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![crate::sync::new_revision(), block, issued as i64, crate::sync::utc_now(), by],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn block_exports(&self) -> Result<Vec<(String, BlockExport)>> {
         let mut st = self
             .conn
@@ -128,6 +193,7 @@ impl Store {
 
     pub(crate) fn block_status_of(&self, state: &State) -> Result<Vec<BlockStatus>> {
         let require_ok = self.settings()?.auto_export_require_ok;
+        let mut issued = self.issued_blocks()?;
         let mut last: std::collections::HashMap<String, BlockExport> = Default::default();
         for (block, e) in self.block_exports()? {
             last.insert(block, e); // ordered by revision: the latest stays
@@ -176,6 +242,7 @@ impl Store {
                 .flat_map(|t| &state.piles[t.first_pile..t.first_pile + t.n_piles])
                 .filter_map(|p| p.result.as_ref().map(|r| r.reveal))
                 .collect();
+            let issued = issued.remove(&block);
             out.push(BlockStatus {
                 block,
                 piles,
@@ -190,6 +257,7 @@ impl Store {
                 needs_export,
                 next_revision,
                 reveal_mean: mean(&reveals),
+                issued,
             });
         }
         Ok(out)

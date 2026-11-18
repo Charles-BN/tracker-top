@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use top_core::{Pile, Tracker, default_solver, normalize_block, optimize_all};
+use top_core::{Pile, Tracker, default_solver, normalize_block, par_map};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -26,6 +26,23 @@ struct LatestRun {
     span_error: Option<f64>,
     anchor_pile: Option<String>,
     anchor_motor: Option<bool>,
+}
+
+/// Marks the input signature of a result made with row alignment.
+const ALIGNED: &str = ":a";
+/// Rounds of row alignment per optimisation run (see `top_core::align_all`).
+const ALIGN_ROUNDS: usize = 8;
+
+/// The part of a stored signature that covers the tracker's own inputs.
+fn sig_own(stored: &str) -> &str {
+    stored.split(':').next().unwrap_or(stored)
+}
+
+/// Whether a stored result still stands: made from the same inputs and, for a
+/// tracker that may move (not in a block issued to the installers), aligned
+/// exactly when alignment is on.
+fn sig_current(own: &str, stored: &str, align: bool, issued: bool) -> bool {
+    sig_own(stored) == own && (issued || stored.ends_with(ALIGNED) == align)
 }
 
 const SCHEMA: &str = include_str!("schema.sql");
@@ -152,6 +169,10 @@ pub struct PileState {
     pub flood_level: Option<f64>,
     pub min_top: Option<f64>,
     pub result: Option<PileResultRow>,
+    /// Top minus the line through the neighbouring rows' tops at this
+    /// Northing (or, beside one row only, that row's profile at this row's
+    /// mean height above it), m; see `top_core::align`.
+    pub row_dev: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -187,6 +208,10 @@ pub struct TrackerState {
     pub tube_slope_pct: Option<f64>,
     /// Above `Settings::slope_warn_pct`.
     pub steep: bool,
+    /// Largest `PileState::row_dev` of the tracker (signed), m.
+    pub max_row_dev: Option<f64>,
+    /// The latest result was made with row alignment.
+    pub aligned: bool,
     /// Index of this tracker's first pile in `State::piles`.
     pub first_pile: usize,
 }
@@ -1864,6 +1889,41 @@ impl Store {
     }
 
     /// Ranges of `piles` (sorted by tracker) that belong to one tracker.
+    /// Each pile's top minus the target its neighbouring rows give it (see
+    /// `top_core::align`), for the trackers with a result.
+    fn row_deviations(
+        masters: &[MasterPile],
+        results: &HashMap<String, PileResultRow>,
+    ) -> HashMap<String, f64> {
+        let ranges = Self::tracker_ranges(masters);
+        let pos: Vec<Vec<(f64, f64)>> = ranges
+            .iter()
+            .map(|r| masters[r.clone()].iter().map(|p| (p.easting, p.northing)).collect())
+            .collect();
+        let tops: Vec<Option<Vec<f64>>> = ranges
+            .iter()
+            .map(|r| {
+                masters[r.clone()]
+                    .iter()
+                    .map(|p| results.get(&p.pile_id).map(|x| x.top))
+                    .collect()
+            })
+            .collect();
+        let rows = top_core::Rows::new(&pos);
+        let mut out = HashMap::new();
+        for (i, r) in ranges.iter().enumerate() {
+            if tops[i].is_none() {
+                continue;
+            }
+            for (p, d) in masters[r.clone()].iter().zip(rows.deviations(i, &tops)) {
+                if let Some(d) = d {
+                    out.insert(p.pile_id.clone(), d);
+                }
+            }
+        }
+        out
+    }
+
     fn tracker_ranges(piles: &[MasterPile]) -> Vec<std::ops::Range<usize>> {
         let mut out = Vec::new();
         let mut start = 0;
@@ -1881,21 +1941,44 @@ impl Store {
     /// Optimise every tracker whose inputs (elevations, settings) changed since
     /// its latest run, or every complete tracker when `force` is set. Trackers
     /// with a pile that has no elevation yet are left waiting.
+    ///
+    /// With `Settings::align_rows`, rows are also pulled towards their
+    /// neighbouring rows (see `top_core::align`): trackers are solved again in
+    /// rounds while their neighbours move, and a tracker whose result only
+    /// changes by less than a millimetre keeps its result. Trackers of blocks
+    /// ticked as issued to the installers never move for their neighbours (nor
+    /// for `force`, nor when alignment is switched on or off): they are only
+    /// optimised again when their own elevations or settings change.
     pub fn optimize(&mut self, force: bool, trigger: &str, threads: usize) -> Result<RunSummary> {
         let started = chrono::Utc::now();
         let settings = self.settings()?;
         let params = settings.params();
         let params_json = settings.params_json();
+        let align = settings.align_rows;
         let piles = self.master_piles()?;
         let elevs = self.latest_elevations()?;
         let floods = self.latest_flood()?;
         let latest = self.latest_runs()?;
+        let issued = self.issued_blocks()?;
+        let solver = default_solver();
+        let threads = threads.max(1);
 
         let mut summary = RunSummary {
             trigger: trigger.into(),
             ..Default::default()
         };
-        let mut todo: Vec<(Tracker, String, Vec<Elev>)> = Vec::new();
+        // Every tracker with an elevation for each pile.
+        struct Ready {
+            tracker: Tracker,
+            own: String,
+            ev: Vec<Elev>,
+            issued: bool,
+            /// Its latest result was made from the same elevations and settings.
+            own_current: bool,
+            /// ... and is what the current settings ask for (aligned or not).
+            current: bool,
+        }
+        let mut ready: Vec<Ready> = Vec::new();
         for range in Self::tracker_ranges(&piles) {
             let tp = &piles[range];
             let ev: Option<Vec<&Elev>> = tp.iter().map(|p| elevs.get(&p.pile_id)).collect();
@@ -1903,11 +1986,11 @@ impl Store {
                 summary.awaiting += 1;
                 continue;
             };
-            let sig = Self::input_sig(&params_json, tp, &ev, &floods);
-            if !force && latest.get(&tp[0].tracker).is_some_and(|l| l.sig == sig) {
-                summary.up_to_date += 1;
-                continue;
-            }
+            let own = Self::input_sig(&params_json, tp, &ev, &floods);
+            let is_issued = issued.contains_key(&tp[0].block);
+            let stored = latest.get(&tp[0].tracker).map(|l| l.sig.as_str());
+            let own_current = stored.is_some_and(|s| sig_own(s) == own);
+            let current = stored.is_some_and(|s| sig_current(&own, s, align, is_issued));
             let tracker = Tracker {
                 id: tp[0].tracker.clone(),
                 piles: tp
@@ -1926,11 +2009,116 @@ impl Store {
                     })
                     .collect(),
             };
-            todo.push((tracker, sig, ev.into_iter().cloned().collect()));
+            ready.push(Ready {
+                tracker,
+                own,
+                ev: ev.into_iter().cloned().collect(),
+                issued: is_issued,
+                own_current,
+                current,
+            });
         }
+        // What needs a new result: issued blocks only for their own inputs.
+        let redo: Vec<bool> = ready
+            .iter()
+            .map(|r| if r.issued { !r.own_current } else { force || !r.current })
+            .collect();
 
-        if todo.is_empty() {
-            summary.message = if summary.up_to_date > 0 {
+        // (index into `ready`, result, aligned)
+        let mut out: Vec<(usize, top_core::TrackerResult, bool)> = Vec::new();
+        if !align {
+            let todo: Vec<usize> = (0..ready.len()).filter(|&i| redo[i]).collect();
+            let results = par_map(&todo, threads, |&i| {
+                top_core::optimize_tracker(&ready[i].tracker, &params, &solver)
+            });
+            out.extend(todo.into_iter().zip(results).map(|(i, r)| (i, r, false)));
+        } else {
+            let rows = top_core::Rows::new(
+                &ready
+                    .iter()
+                    .map(|r| r.tracker.piles.iter().map(|p| (p.easting, p.northing)).collect())
+                    .collect::<Vec<_>>(),
+            );
+            let stored = self.latest_pile_results(&piles, &latest)?;
+            let mut tops: Vec<Option<Vec<f64>>> = ready
+                .iter()
+                .map(|r| {
+                    r.own_current
+                        .then(|| {
+                            r.tracker
+                                .piles
+                                .iter()
+                                .map(|p| stored.get(&p.name).map(|x| x.top))
+                                .collect::<Option<Vec<f64>>>()
+                        })
+                        .flatten()
+                })
+                .collect();
+            let old_tops = tops.clone();
+            // Trackers with new inputs start from their own optimum.
+            let seeds: Vec<usize> = (0..ready.len()).filter(|&i| tops[i].is_none()).collect();
+            let seeded = par_map(&seeds, threads, |&i| {
+                top_core::optimize_tracker(&ready[i].tracker, &params, &solver)
+            });
+            for (&i, r) in seeds.iter().zip(&seeded) {
+                tops[i] = Some(r.piles.iter().map(|p| p.top).collect());
+            }
+            // Issued trackers with new inputs: aligned once to the rows around
+            // them, then fixed.
+            let issued_redo: Vec<usize> = (0..ready.len())
+                .filter(|&i| ready[i].issued && redo[i])
+                .collect();
+            let targets: Vec<Vec<Option<f64>>> =
+                issued_redo.iter().map(|&i| rows.targets(i, &tops)).collect();
+            let jobs: Vec<(usize, &Vec<Option<f64>>)> =
+                issued_redo.iter().copied().zip(&targets).collect();
+            let fixed = par_map(&jobs, threads, |(i, t)| {
+                top_core::optimize_tracker_aligned(&ready[*i].tracker, &params, &solver, t)
+            });
+            for ((i, _), r) in jobs.iter().zip(fixed) {
+                tops[*i] = Some(r.piles.iter().map(|p| p.top).collect());
+                out.push((*i, r, true));
+            }
+            // The others: those to redo, and the movable rows beside anything
+            // that has new tops.
+            let movable: Vec<bool> = ready.iter().map(|r| !r.issued).collect();
+            let mut work: std::collections::BTreeSet<usize> =
+                (0..ready.len()).filter(|&i| movable[i] && redo[i]).collect();
+            for &i in seeds.iter().chain(&issued_redo) {
+                work.extend(rows.neighbours(i));
+            }
+            let trackers: Vec<Tracker> = ready.iter().map(|r| r.tracker.clone()).collect();
+            let work: Vec<usize> = work.into_iter().collect();
+            let aligned = top_core::align_all(
+                &trackers,
+                &rows,
+                &mut tops,
+                &movable,
+                &work,
+                &params,
+                &solver,
+                threads,
+                ALIGN_ROUNDS,
+            );
+            for (i, r) in aligned {
+                // Solved again only because a neighbour moved: keep the stored
+                // result unless the tops really changed.
+                if !redo[i]
+                    && let Some(old) = &old_tops[i]
+                    && old
+                        .iter()
+                        .zip(&r.piles)
+                        .all(|(a, p)| (a - p.top).abs() < 5e-4)
+                {
+                    continue;
+                }
+                out.push((i, r, true));
+            }
+        }
+        summary.up_to_date = ready.len() - out.len();
+
+        if out.is_empty() {
+            summary.message = if !ready.is_empty() {
                 "Every tracker with complete elevations is already up to date.".into()
             } else {
                 "No tracker has an elevation for every pile yet: nothing to optimise.".into()
@@ -1938,15 +2126,13 @@ impl Store {
             summary.duration_ms = (chrono::Utc::now() - started).num_milliseconds().max(0) as u64;
             return Ok(summary);
         }
-
-        let trackers: Vec<Tracker> = todo.iter().map(|(t, _, _)| t.clone()).collect();
-        let results = optimize_all(&trackers, &params, &default_solver(), threads.max(1));
+        out.sort_by_key(|(i, _, _)| *i);
         let created_at = now();
 
         let tx = self.conn.transaction().map_err(db)?;
         tx.execute(
             "INSERT INTO runs (created_at, params, trigger, trackers_run, duration_ms) VALUES (?1, ?2, ?3, ?4, 0)",
-            params![created_at, params_json, trigger, todo.len() as i64],
+            params![created_at, params_json, trigger, out.len() as i64],
         )
         .map_err(db)?;
         let run_id = tx.last_insert_rowid();
@@ -1965,7 +2151,13 @@ impl Store {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 )
                 .map_err(db)?;
-            for ((tracker, sig, ev), res) in todo.iter().zip(&results) {
+            for (i, res, aligned) in &out {
+                let Ready { tracker, own, ev, .. } = &ready[*i];
+                let sig = if *aligned {
+                    format!("{own}{ALIGNED}")
+                } else {
+                    own.clone()
+                };
                 let n_survey = ev.iter().filter(|e| e.kind == Kind::Survey).count();
                 let status = res.status.as_str();
                 *summary.counts.entry(status.to_string()).or_default() += 1;
@@ -2012,11 +2204,11 @@ impl Store {
 
         summary.run_id = Some(run_id);
         summary.created_at = created_at;
-        summary.trackers_run = todo.len();
+        summary.trackers_run = out.len();
         summary.duration_ms = (chrono::Utc::now() - started).num_milliseconds().max(0) as u64;
         summary.message = format!(
             "Optimised {} trackers in {} ms.",
-            todo.len(),
+            out.len(),
             summary.duration_ms
         );
         Ok(summary)
@@ -2031,6 +2223,8 @@ impl Store {
         let floods = self.latest_flood()?;
         let runs = self.latest_runs()?;
         let mut results = self.latest_pile_results(&masters, &runs)?;
+        let issued = self.issued_blocks()?;
+        let row_dev = Self::row_deviations(&masters, &results);
         let counts = self.survey_counts()?;
         let kinds = self.ground_by_kind()?;
 
@@ -2062,7 +2256,9 @@ impl Store {
             let (status, stale) = match run {
                 Some(r) => (
                     r.status.clone(),
-                    current_sig.as_deref() != Some(r.sig.as_str()),
+                    !current_sig.as_deref().is_some_and(|own| {
+                        sig_current(own, &r.sig, settings.align_rows, issued.contains_key(&tp[0].block))
+                    }),
                 ),
                 None if n_missing > 0 => ("AwaitingSurvey".to_string(), false),
                 None => ("NotRun".to_string(), true),
@@ -2119,6 +2315,12 @@ impl Store {
                 n_flood_raised,
                 steep: tube_slope_pct.is_some_and(|g| g > settings.slope_warn_pct),
                 tube_slope_pct,
+                max_row_dev: tp
+                    .iter()
+                    .filter_map(|p| row_dev.get(&p.pile_id))
+                    .copied()
+                    .max_by(|a, b| a.abs().total_cmp(&b.abs())),
+                aligned: run.is_some_and(|r| r.sig.ends_with(ALIGNED)),
                 first_pile: range.start,
             });
             for (p, e) in tp.iter().zip(ev) {
@@ -2152,6 +2354,7 @@ impl Store {
                     flood_level: e.and_then(|e| settings.flood_water_level(e.z, flood_value)),
                     min_top: e.and_then(|e| settings.min_top(e.z, flood_value)),
                     result: results.remove(&p.pile_id),
+                    row_dev: row_dev.get(&p.pile_id).copied(),
                 });
             }
         }
@@ -3264,5 +3467,96 @@ mod progress_tests {
             .collect();
         // Pile a counts on its first day only.
         assert_eq!(days, vec![("2026-11-02", 1), ("2026-11-05", 1)]);
+    }
+}
+
+#[cfg(test)]
+mod align_tests {
+    use super::tests::loaded;
+    use super::*;
+
+    fn tops(s: &Store) -> HashMap<String, f64> {
+        s.state()
+            .unwrap()
+            .piles
+            .into_iter()
+            .filter_map(|p| p.result.map(|r| (p.pile_id, r.top)))
+            .collect()
+    }
+
+    fn kink(s: &Store) -> f64 {
+        let st = s.state().unwrap();
+        let mut d: Vec<f64> = st.piles.iter().filter_map(|p| p.row_dev).map(f64::abs).collect();
+        d.sort_by(f64::total_cmp);
+        d[d.len() * 9 / 10]
+    }
+
+    fn set_align(s: &mut Store, on: bool) {
+        let mut st = s.settings().unwrap();
+        st.align_rows = on;
+        s.set_settings(&st).unwrap();
+    }
+
+    #[test]
+    fn aligning_rows_reduces_kinks_and_keeps_issued_blocks() {
+        let mut s = loaded();
+        s.optimize(false, "t", 2).unwrap();
+        let before = tops(&s);
+        let kink_before = kink(&s);
+        let blocks: Vec<String> = s.block_status().unwrap().into_iter().map(|b| b.block).collect();
+        assert!(!blocks.is_empty());
+
+        // Switching alignment on re-runs the movable trackers, aligned.
+        set_align(&mut s, true);
+        assert!(s.state().unwrap().trackers.iter().all(|t| t.stale));
+        let run = s.optimize(false, "t", 2).unwrap();
+        assert!(run.trackers_run > 0);
+        let st = s.state().unwrap();
+        assert!(st.trackers.iter().all(|t| !t.stale && t.aligned));
+        assert!(kink(&s) < kink_before, "{} -> {}", kink_before, kink(&s));
+        for p in &st.piles {
+            let r = p.result.as_ref().unwrap();
+            assert!(r.reveal >= 1.20 - 1e-6 && r.reveal <= 1.60 + 1e-6, "{}", r.reveal);
+        }
+        let aligned = tops(&s);
+        assert_ne!(aligned, before);
+
+        // An issued block keeps its tops when alignment is switched off, and
+        // even when every tracker is re-run on purpose.
+        let b = &blocks[0];
+        s.set_block_issued(b, true, "tester").unwrap();
+        assert_eq!(s.block_status().unwrap()[0].issued.as_ref().unwrap().by, "tester");
+        set_align(&mut s, false);
+        s.optimize(false, "t", 2).unwrap();
+        s.optimize(true, "t", 2).unwrap();
+        let st = s.state().unwrap();
+        for p in st.piles.iter().filter(|p| &p.block == b) {
+            assert_eq!(p.result.as_ref().unwrap().top, aligned[&p.pile_id]);
+        }
+        assert!(st.trackers.iter().all(|t| !t.stale));
+
+        // Unticked, it follows the settings again (not aligned).
+        s.set_block_issued(b, false, "tester").unwrap();
+        assert!(s.block_status().unwrap()[0].issued.is_none());
+        assert!(s.state().unwrap().trackers.iter().any(|t| t.stale));
+        s.optimize(false, "t", 2).unwrap();
+        assert_eq!(tops(&s), before);
+    }
+
+    #[test]
+    fn issued_ticks_are_merged_between_computers() {
+        let mut a = loaded();
+        let mut b = Store::from_bytes(&a.to_bytes().unwrap()).unwrap();
+        let block = a.block_status().unwrap()[0].block.clone();
+        a.set_block_issued(&block, true, "A").unwrap();
+        // b merges its copy into a's: a's tick stays, and b's own ticks join.
+        b.set_block_issued(&block, true, "B").unwrap();
+        b.set_block_issued(&block, false, "B").unwrap();
+        let mut report = crate::sync::SyncReport::default();
+        b.merge_into(&mut a, &mut report).unwrap();
+        assert_eq!(report.issues_added, 2);
+        // The latest change (b's untick) decides.
+        assert!(a.issued_blocks().unwrap().is_empty());
+        assert!(a.set_block_issued("no such block", true, "A").is_err());
     }
 }

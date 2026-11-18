@@ -22,6 +22,11 @@
 //! Replacing the old iterative +/-0.1 m grading loop, cut/fill is a variable
 //! with a large penalty `lambda`, so it is used only where the reveal window
 //! and angle limit cannot otherwise be met.
+//!
+//! With row alignment ([`crate::align`]), piles that have a target top `t_i`
+//! from the neighbouring rows add `w * (y_i - t_i)^2` to the objective, with
+//! `w = Params::align_weight` and `t_i` first brought inside the pile's reveal
+//! window, so that the pull never calls for cut/fill.
 
 use crate::model::Tracker;
 use crate::params::Params;
@@ -177,7 +182,14 @@ fn passthrough(
 /// Assemble the QP described in the module docs. Variables are `[y_0..y_n, c_0..c_n]`,
 /// with elevations shifted by `z_ref` for numerical conditioning. Piles with a
 /// `min_top` get one more row, `y_i >= min_top_i`.
-fn build_qp(s: &[f64], z: &[f64], min_top: &[Option<f64>], z_ref: f64, params: &Params) -> Qp {
+fn build_qp(
+    s: &[f64],
+    z: &[f64],
+    min_top: &[Option<f64>],
+    targets: &[Option<f64>],
+    z_ref: f64,
+    params: &Params,
+) -> Qp {
     let n = s.len();
     let nv = 2 * n;
     let n_angle = n - 2;
@@ -195,6 +207,27 @@ fn build_qp(s: &[f64], z: &[f64], min_top: &[Option<f64>], z_ref: f64, params: &
         p[(n + i) * nv + (n + i)] = 2.0 + 2.0 * lambda;
         q[i] = -2.0 * t;
         q[n + i] = 2.0 * t;
+    }
+    // Pull towards the neighbouring rows, to a target inside the reveal window.
+    let w = params.align_weight;
+    if w > 0.0 {
+        for (i, t) in targets.iter().enumerate().take(n) {
+            let Some(t) = t.filter(|t| t.is_finite()) else {
+                continue;
+            };
+            // Aim a little inside the window: tops pushed to its edges leave
+            // the installers no tolerance and the rounding no room.
+            let margin = ALIGN_MARGIN.min((params.reveal_max() - params.reveal_min()) / 4.0);
+            let mut t = t.clamp(
+                z[i] + params.reveal_min() + margin,
+                z[i] + params.reveal_max() - margin,
+            );
+            if let Some(m) = min_top[i] {
+                t = t.max(m);
+            }
+            p[i * nv + i] += 2.0 * w;
+            q[i] -= 2.0 * w * (t - z_ref);
+        }
     }
 
     let mut a = vec![0.0; m * nv];
@@ -270,7 +303,62 @@ pub fn optimize_tracker(
     params: &Params,
     solver: &dyn QpSolver,
 ) -> TrackerResult {
-    let mut res = optimize_at(tracker, params, solver);
+    optimize_tracker_aligned(tracker, params, solver, &[])
+}
+
+/// [`optimize_tracker`] with a target top per pile from the neighbouring rows
+/// (see [`crate::align`]; aligned with `tracker.piles`, empty for none).
+///
+/// Alignment never makes a tracker worse than on its own: when the aligned
+/// result needs cut/fill (or breaks a limit) that the tracker alone would
+/// not, the pull is weakened, and in the end dropped.
+pub fn optimize_tracker_aligned(
+    tracker: &Tracker,
+    params: &Params,
+    solver: &dyn QpSolver,
+    targets: &[Option<f64>],
+) -> TrackerResult {
+    if params.align_weight <= 0.0 || targets.iter().all(Option::is_none) {
+        return optimize_placed(tracker, params, solver, &[]);
+    }
+    let first = optimize_placed(tracker, params, solver, targets);
+    if first.status == TrackerStatus::Compliant {
+        return first;
+    }
+    let alone = optimize_placed(tracker, params, solver, &[]);
+    let rank = |r: &TrackerResult| {
+        let s = match r.status {
+            TrackerStatus::Compliant => 0,
+            TrackerStatus::Graded => 1,
+            _ => 2,
+        };
+        (s, (r.max_cut_fill * 1e4).round() as i64)
+    };
+    if rank(&first) <= rank(&alone) {
+        return first;
+    }
+    let weaker = Params {
+        align_weight: params.align_weight / 4.0,
+        ..params.clone()
+    };
+    let second = optimize_placed(tracker, &weaker, solver, targets);
+    if rank(&second) <= rank(&alone) {
+        return second;
+    }
+    alone
+}
+
+/// Margin (m) kept between an alignment target and the reveal window's edges.
+const ALIGN_MARGIN: f64 = 0.02;
+
+/// One tracker, optimised and (with `fixed_spans`) set out.
+fn optimize_placed(
+    tracker: &Tracker,
+    params: &Params,
+    solver: &dyn QpSolver,
+    targets: &[Option<f64>],
+) -> TrackerResult {
+    let mut res = optimize_at(tracker, params, solver, targets);
     if !params.fixed_spans || tracker.piles.len() < 2 || res.status == TrackerStatus::InvalidInput {
         return res;
     }
@@ -289,7 +377,7 @@ pub fn optimize_tracker(
                 p.easting = so.easting[i];
                 p.northing = so.northing[i];
             }
-            res = optimize_at(&moved, params, solver);
+            res = optimize_at(&moved, params, solver, targets);
             let mut next = set_out(tracker, &tops(&res));
             round_set_out(&mut next, params.round_step);
             let change = next
@@ -347,7 +435,12 @@ pub fn optimize_tracker(
 }
 
 /// Optimise one tracker with its piles where they are.
-fn optimize_at(tracker: &Tracker, params: &Params, solver: &dyn QpSolver) -> TrackerResult {
+fn optimize_at(
+    tracker: &Tracker,
+    params: &Params,
+    solver: &dyn QpSolver,
+    targets: &[Option<f64>],
+) -> TrackerResult {
     let n = tracker.piles.len();
     let z: Vec<f64> = tracker.piles.iter().map(|p| p.z_lidar).collect();
     let min_top: Vec<Option<f64>> = tracker
@@ -377,7 +470,7 @@ fn optimize_at(tracker: &Tracker, params: &Params, solver: &dyn QpSolver) -> Tra
 
     let z_ref = z.iter().sum::<f64>() / n as f64;
     let solve = |p: &Params| {
-        let sol = solver.solve(&build_qp(&s, &z, &min_top, z_ref, p));
+        let sol = solver.solve(&build_qp(&s, &z, &min_top, targets, z_ref, p));
         let top: Vec<f64> = (0..n).map(|i| sol.x[i] + z_ref).collect();
         let cf: Vec<f64> = (0..n).map(|i| sol.x[n + i]).collect();
         (top, cf, sol)
@@ -659,16 +752,22 @@ pub fn optimize_all(
     solver: &dyn QpSolver,
     threads: usize,
 ) -> Vec<TrackerResult> {
-    let threads = threads.max(1).min(trackers.len().max(1));
+    par_map(trackers, threads, |t| optimize_tracker(t, params, solver))
+}
+
+/// `f` applied to every item on `threads` worker threads, results in order.
+/// With one thread (or one item) no thread is started.
+pub fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let threads = threads.max(1).min(items.len().max(1));
     if threads == 1 {
-        return trackers
-            .iter()
-            .map(|t| optimize_tracker(t, params, solver))
-            .collect();
+        return items.iter().map(&f).collect();
     }
     let next = AtomicUsize::new(0);
-
-    let mut slots: Vec<Option<TrackerResult>> = (0..trackers.len()).map(|_| None).collect();
+    let mut slots: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
@@ -676,10 +775,10 @@ pub fn optimize_all(
                     let mut local = Vec::new();
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= trackers.len() {
+                        if i >= items.len() {
                             break;
                         }
-                        local.push((i, optimize_tracker(&trackers[i], params, solver)));
+                        local.push((i, f(&items[i])));
                     }
                     local
                 })
@@ -693,7 +792,7 @@ pub fn optimize_all(
     });
     slots
         .into_iter()
-        .map(|r| r.expect("every tracker is processed"))
+        .map(|r| r.expect("every item is processed"))
         .collect()
 }
 

@@ -233,6 +233,13 @@
         <p class="rule" id="flood-rule"></p>
       </div>
       <div class="card" data-group="limits">
+        <div class="card-head"><h2>Neighbouring rows</h2><span class="tag">less shade</span></div>
+        <label class="check"><input type="checkbox" name="align_rows">
+          <span>Align each row with its neighbouring rows</span></label>
+        <p class="ink2" style="margin-top:6px">Tops are pulled towards the line through the rows on either side, inside the reveal window and every other limit. Blocks ticked as <b>issued to the installers</b> (Overview, Progress by block) keep their tops.</p>
+        <details class="more"><summary>Why and how</summary><p>When the trackers backtrack in the early morning and late evening, a row that sits lower than the line through its two neighbours, or whose height step to a neighbour changes along the row, gets shade the backtracking cannot avoid. A steady slope across the rows is fine. With this on, each tracker is optimised with a pull towards the line through its neighbours at the same Northing (beside one row only: parallel to it), aimed at least 2 cm inside the reveal window, so it never adds cut/fill; a tracker whose result would get worse (cut/fill, a limit) gets a weaker pull or none. Rows are solved again in rounds while their neighbours move. The <b>Off rows</b> column in Results gives each tracker's largest distance from that line.</p></details>
+      </div>
+      <div class="card" data-group="limits">
         <div class="card-head"><h2>Set-out</h2><span class="tag">new pile positions</span></div>
         <div class="settings-grid">
           <label class="check" style="align-self:start"><input type="checkbox" name="fixed_spans">

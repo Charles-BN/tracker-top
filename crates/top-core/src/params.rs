@@ -28,6 +28,9 @@ pub struct Params {
     /// for the centimetre; 0 keeps the exact values. The limits are checked on
     /// the rounded values (see [`crate::optimize`]).
     pub round_step: f64,
+    /// Weight of the pull towards the neighbouring rows (see [`crate::align`]),
+    /// relative to keeping the nominal reveal; 0 = off.
+    pub align_weight: f64,
 }
 
 impl Default for Params {
@@ -44,6 +47,7 @@ impl Default for Params {
             lidar_sigma_alpha: 2.0,
             fixed_spans: false,
             round_step: 0.0,
+            align_weight: 0.0,
         }
     }
 }
@@ -69,6 +73,9 @@ impl Params {
         }
         if !(self.max_cut_fill >= 0.0) {
             return Err("max_cut_fill must be >= 0".into());
+        }
+        if !(self.align_weight >= 0.0 && self.align_weight.is_finite()) {
+            return Err("align_weight must be >= 0".into());
         }
         if !(self.round_step >= 0.0 && self.round_step <= 0.05) {
             return Err("round_step must be between 0 and 0.05 m".into());

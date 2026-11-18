@@ -562,3 +562,6 @@ details.more p { margin-top: 6px; line-height: 1.5; }
 .plot-cross { stroke: var(--ink-2); stroke-width: 1; }
 .plot-hover-dot { fill: var(--surface); stroke: var(--ink); stroke-width: 2; pointer-events: none; }
 .plot-tip { position: absolute; z-index: 5; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 7px 10px; font-size: 12.5px; line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.issue-tick { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+.issue-tick input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }

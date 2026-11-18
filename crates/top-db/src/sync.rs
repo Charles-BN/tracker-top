@@ -74,6 +74,8 @@ pub struct SyncReport {
     pub duplicates_skipped: usize,
     /// Installer exports of this computer added to the shared log.
     pub exports_added: usize,
+    /// "Issued to installers" ticks of this computer added to the shared copy.
+    pub issues_added: usize,
     /// Shared settings taken from this computer because they are newer.
     pub settings_kept: Vec<String>,
     /// Who saved the shared copy last.
@@ -347,7 +349,7 @@ impl Store {
     }
 
     /// Add what this database has and `theirs` lacks to `theirs`.
-    fn merge_into(&self, theirs: &mut Store, report: &mut SyncReport) -> Result<()> {
+    pub(crate) fn merge_into(&self, theirs: &mut Store, report: &mut SyncReport) -> Result<()> {
         let err = |e: rusqlite::Error| e.to_string();
         let mine = self.import_copies()?;
         let their_imports = theirs.import_copies()?;
@@ -563,6 +565,42 @@ impl Store {
             )
             .map_err(err)?;
             report.exports_added += 1;
+        }
+
+        // Issued-to-installers ticks: a union (each tick or untick is kept once).
+        let their_uids: HashSet<String> = {
+            let mut st = tx.prepare("SELECT uid FROM block_issues").map_err(err)?;
+            st.query_map([], |r| r.get(0))
+                .map_err(err)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(err)?
+        };
+        let mut st = self
+            .conn
+            .prepare("SELECT uid, block, issued, at, by FROM block_issues ORDER BY event_id")
+            .map_err(err)?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(err)?;
+        for row in rows {
+            let (uid, block, issued, at, by) = row.map_err(err)?;
+            if their_uids.contains(&uid) {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO block_issues (uid, block, issued, at, by) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![uid, block, issued, at, by],
+            )
+            .map_err(err)?;
+            report.issues_added += 1;
         }
 
         // Shared settings: the most recently changed wins.
