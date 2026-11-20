@@ -251,8 +251,27 @@ design height for 98 % of piles. Exports have *Tube Z*, *Pile Stick-up* (top abo
 Height TTH (m)*. Results, the profile (tube line, each pile's top below it), the Map and the 3D view
 use the same words.
 
-The design limits (window, angle limit between spans) are the project's own: enter the tracker
-maker's values for an ATI project.
+The design limits are the project's own. Besides the window and the angle change between spans:
+
+- **Pile limits** (same card): each pile part's (the master list's *Description*, else its pile type)
+  own **lowest and highest reveal**, e.g. a clearance under the modules or the driveline, or the pile
+  length minus its minimum embedment. They narrow the window at that pile (in tube mode, plus the
+  type's drop). *Load from a file* reads a CSV: part; lowest reveal; highest reveal (one line each;
+  a header and further columns are ignored).
+- **Max slope of one span** and **of a whole tracker** (first pile to last), in degrees (ATI: local
+  torque-tube slope LTTS < 15°, average ATTS < 8.5°); 0 = no limit. Kept by the optimiser and
+  checked on the rounded result.
+
+For GESF (ATI OmniTrack, constraints of `GESF-piles`): angle change < 1°, span ≤ 15°, tracker ≤
+8.5°, tube height at most the row's design height (highest offset 0) and pile limits per part:
+lowest reveal BG 1.112 m / CS 0.251 m (350 mm module clearance), highest = the smaller of the
+maximum tracker height (BG 1.356 / 1.559 / 1.699 m, CS 0.495 / 0.698 / 0.838 m for the 1.47 / 1.67
+/ 1.81 m rows) and pile length − minimum embedment (only *1.81 Interior W8X10 BH 3.74 m* is
+tighter: 1.680 m). With those, every pile keeps its limits; 4,959 trackers are compliant and 11 need
+cut/fill where the LIDAR has a mound or dip the designer's layout did not keep within the limits
+either (e.g. PCS10.64-S01-R01: tube 1.15 – 2.10 m over the ground in a 1.81 m row). The flood rule
+(Settings > Flood) applies to the tube: 100 mm freeboard and 0.874 m from the tube to the lowest
+module edge (a reference tube height of 1.224 m with 0.350 m module clearance).
 
 ### Neighbouring rows (alignment)
 

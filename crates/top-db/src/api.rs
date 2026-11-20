@@ -161,6 +161,8 @@ fn state_columns(store: &Store) -> Result<Value, String> {
         "rdev": col(&|p| opt(p.row_dev, 4)),
         "line": col(&|p| opt(p.result.as_ref().map(|r| r.line), 4)),
         "nom": col(&|p| opt(p.nominal, 3)),
+        "wlo": col(&|p| json!(r(p.window.0, 4))),
+        "whi": col(&|p| json!(r(p.window.1, 4))),
         "desc": col(&|p| json!(p.description)),
         "part": col(&|p| json!(p.part_number)),
         "se": col(&|p| opt(p.result.as_ref().and_then(|r| r.set_easting), 4)),

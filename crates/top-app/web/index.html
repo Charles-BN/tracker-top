@@ -216,6 +216,9 @@
         </label>
         <div class="sub-head" style="margin-top:12px"><h3>Pile types</h3></div>
         <div class="table-wrap"><table class="pile-rules" id="pile-rules"></table></div>
+        <div class="sub-head" style="margin-top:14px"><h3>Pile limits</h3><span><label class="btn small ghost" style="cursor:pointer">Load from a file<input type="file" id="limits-file" accept=".csv,.txt" hidden></label></span></div>
+        <p class="ink2" style="font-size:12.5px;margin-bottom:6px">Lowest and highest <b>reveal</b> (top of pile above the ground) of each pile part, e.g. a clearance under the modules, or the pile length minus its minimum embedment. Empty: no limit of its own. They narrow the window above.</p>
+        <div class="table-wrap"><table class="pile-rules" id="pile-limits"></table></div>
         <details class="more"><summary>How these are used</summary><p>With heights on the torque tube, the optimiser works on the tube: the window, the angle limit, the set-out and the alignment of neighbouring rows all apply to it, and each pile's top is the tube minus its type's drop, rounded to the centimetre (what the installers drive to). The motor pile (the drive, ATI's centre structure) is the pile the set-out keeps fixed. A master list giving both tube and pile-top elevations (ATI: <i>Z TT</i>, <i>Z Pile</i>) fills this in on import, and its row heights (<i>Row TTH</i>) are used row by row.</p></details>
       </div>
       <div class="card" data-group="limits">

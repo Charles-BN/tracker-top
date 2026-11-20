@@ -132,10 +132,12 @@ fn outlier_flags(z: &[f64], alpha: f64) -> Vec<bool> {
     z.iter().map(|v| (v - mean).abs() > alpha * sd).collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn passthrough(
     tracker: &Tracker,
     z: &[f64],
     zq: &[f64],
+    win: &Window,
     min_top: &[Option<f64>],
     flags: Vec<bool>,
     params: &Params,
@@ -147,7 +149,9 @@ fn passthrough(
             let step = params.round_step;
             let drop = pile.drop;
             // Lines whose pile top falls on the rounding grid.
-            let nominal = round_to(zq[i] + params.reveal_nominal - drop, step) + drop;
+            // The design height, inside the pile's own limits when it can be.
+            let target = (zq[i] + params.reveal_nominal).min(win.hi[i]).max(win.lo[i]);
+            let nominal = round_to(target - drop, step) + drop;
             let lowest = |m: f64| {
                 if step > 0.0 {
                     ((m - drop) / step - 1e-9).ceil() * step + drop
@@ -184,12 +188,59 @@ fn passthrough(
     }
 }
 
+/// Absolute bounds of `y_i - c_i` (the line over the ground after cut/fill)
+/// for each pile: the window around its design height (`Pile::nominal`, else
+/// the nominal one), narrowed by its own limits (`Pile::min_height`,
+/// `max_height`). `tight` (>= 0) narrows them all, for room to round.
+#[derive(Clone, Debug)]
+struct Window {
+    lo: Vec<f64>,
+    hi: Vec<f64>,
+}
+
+impl Window {
+    fn new(tracker: &Tracker, params: &Params, tight: f64) -> Self {
+        let (mut lo, mut hi) = (Vec::new(), Vec::new());
+        for p in &tracker.piles {
+            let nom = p.nominal.filter(|v| v.is_finite()).unwrap_or(params.reveal_nominal);
+            let mut a = nom + params.delta_min + tight;
+            let mut b = nom + params.delta_max - tight;
+            if let Some(m) = p.min_height.filter(|v| v.is_finite()) {
+                a = a.max(m + tight);
+            }
+            if let Some(m) = p.max_height.filter(|v| v.is_finite()) {
+                b = b.min(m - tight);
+            }
+            lo.push(p.z_lidar + a);
+            hi.push(p.z_lidar + b);
+        }
+        Window { lo, hi }
+    }
+}
+
+/// Every span within the slope limit, and the whole tracker within its own.
+fn slopes_ok(s: &[f64], y: &[f64], params: &Params) -> bool {
+    let n = y.len();
+    let span = params.max_span_slope_deg <= 0.0
+        || (0..n.saturating_sub(1)).all(|i| {
+            ((y[i + 1] - y[i]).atan2(s[i + 1] - s[i])).to_degrees().abs()
+                <= params.max_span_slope_deg + params.angle_tolerance_deg
+        });
+    let whole = params.max_tracker_slope_deg <= 0.0
+        || n < 2
+        || ((y[n - 1] - y[0]).atan2(s[n - 1] - s[0])).to_degrees().abs()
+            <= params.max_tracker_slope_deg + params.angle_tolerance_deg;
+    span && whole
+}
+
 /// Assemble the QP described in the module docs. Variables are `[y_0..y_n, c_0..c_n]`,
 /// with elevations shifted by `z_ref` for numerical conditioning. Piles with a
 /// `min_top` get one more row, `y_i >= min_top_i`.
+#[allow(clippy::too_many_arguments)]
 fn build_qp(
     s: &[f64],
     z: &[f64],
+    win: &Window,
     min_top: &[Option<f64>],
     targets: &[Option<f64>],
     z_ref: f64,
@@ -199,7 +250,9 @@ fn build_qp(
     let nv = 2 * n;
     let n_angle = n - 2;
     let n_min = min_top.iter().flatten().count();
-    let m = 2 * n + n_angle + n_min;
+    let n_span = if params.max_span_slope_deg > 0.0 { n - 1 } else { 0 };
+    let n_avg = usize::from(params.max_tracker_slope_deg > 0.0);
+    let m = 2 * n + n_angle + n_min + n_span + n_avg;
 
     let lambda = params.cut_fill_penalty;
     let mut p = vec![0.0; nv * nv];
@@ -222,11 +275,8 @@ fn build_qp(
             };
             // Aim a little inside the window: tops pushed to its edges leave
             // the installers no tolerance and the rounding no room.
-            let margin = ALIGN_MARGIN.min((params.reveal_max() - params.reveal_min()) / 4.0);
-            let mut t = t.clamp(
-                z[i] + params.reveal_min() + margin,
-                z[i] + params.reveal_max() - margin,
-            );
+            let margin = ALIGN_MARGIN.min(((win.hi[i] - win.lo[i]) / 4.0).max(0.0));
+            let mut t = t.clamp(win.lo[i] + margin, (win.hi[i] - margin).max(win.lo[i] + margin));
             if let Some(m) = min_top[i] {
                 t = t.max(m);
             }
@@ -240,12 +290,12 @@ fn build_qp(
     let mut u = vec![0.0; m];
     let mut row = 0;
 
-    // Reveal window: y_i - c_i in [z_i + rmin, z_i + rmax].
+    // Window: y_i - c_i in [lo_i, hi_i] (see `Window`).
     for i in 0..n {
         a[row * nv + i] = 1.0;
         a[row * nv + n + i] = -1.0;
-        l[row] = z[i] - z_ref + params.reveal_min();
-        u[row] = z[i] - z_ref + params.reveal_max();
+        l[row] = win.lo[i] - z_ref;
+        u[row] = win.hi[i] - z_ref;
         row += 1;
     }
 
@@ -280,6 +330,29 @@ fn build_qp(
             u[row] = f64::INFINITY;
             row += 1;
         }
+    }
+
+    // Slope of each span: |y_{i+1} - y_i| <= tan(limit) * h_i (scaled like the angle rows).
+    if n_span > 0 {
+        let tan = params.max_span_slope_deg.to_radians().tan();
+        for i in 0..n - 1 {
+            let h = s[i + 1] - s[i];
+            a[row * nv + i] = -h_mean / h;
+            a[row * nv + i + 1] = h_mean / h;
+            l[row] = -tan * h_mean;
+            u[row] = tan * h_mean;
+            row += 1;
+        }
+    }
+    // Slope of the whole tracker, first pile to last.
+    if n_avg > 0 {
+        let tan = params.max_tracker_slope_deg.to_radians().tan();
+        let len = s[n - 1] - s[0];
+        a[row * nv] = -h_mean / len;
+        a[row * nv + n - 1] = h_mean / len;
+        l[row] = -tan * h_mean;
+        u[row] = tan * h_mean;
+        row += 1;
     }
     debug_assert_eq!(row, m);
 
@@ -466,7 +539,8 @@ fn optimize_at(
     let drop: Vec<f64> = tracker.piles.iter().map(|p| p.drop).collect();
 
     if n < 3 {
-        return passthrough(tracker, &z, &zq, &min_top, flags, params, TrackerStatus::Skipped);
+        let win = Window::new(tracker, params, 0.0);
+        return passthrough(tracker, &z, &zq, &win, &min_top, flags, params, TrackerStatus::Skipped);
     }
 
     let s = tracker.chainage();
@@ -477,6 +551,7 @@ fn optimize_at(
             tracker,
             &z,
             &zq,
+            &Window::new(tracker, params, 0.0),
             &min_top,
             flags,
             params,
@@ -485,8 +560,11 @@ fn optimize_at(
     }
 
     let z_ref = zq.iter().sum::<f64>() / n as f64;
+    // The window the result must keep, and narrower ones for room to round.
+    let win0 = Window::new(tracker, params, 0.0);
     let solve = |p: &Params| {
-        let sol = solver.solve(&build_qp(&s, &zq, &min_top, targets, z_ref, p));
+        let win = Window::new(tracker, params, (p.delta_min - params.delta_min).max(0.0));
+        let sol = solver.solve(&build_qp(&s, &zq, &win, &min_top, targets, z_ref, p));
         let top: Vec<f64> = (0..n).map(|i| sol.x[i] + z_ref).collect();
         let cf: Vec<f64> = (0..n).map(|i| sol.x[n + i]).collect();
         (top, cf, sol)
@@ -525,7 +603,7 @@ fn optimize_at(
                 top = t;
                 cf = c;
             }
-            if let Some((t, c)) = round_profile(&s, &zq, &top, &drop, &min_top, params, step) {
+            if let Some((t, c)) = round_profile(&s, &win0, &top, &drop, &min_top, params, step) {
                 if graded(&c) && !exact_graded {
                     fallback.get_or_insert((t, c, on_min.clone()));
                     continue;
@@ -546,7 +624,7 @@ fn optimize_at(
             // Nearest values: the checks below report the tracker NonCompliant.
             for i in 0..n {
                 top[i] = round_to(top[i] - drop[i], step) + drop[i];
-                cf[i] = cut_fill_for(top[i], zq[i], params, step);
+                cf[i] = cut_fill_for(top[i], win0.lo[i], win0.hi[i], step);
             }
         }
     }
@@ -579,11 +657,13 @@ fn optimize_at(
         .iter()
         .zip(&min_top)
         .all(|(p, mt)| mt.is_none_or(|m| p.line >= m - REVEAL_TOL));
-    let reveal_ok = piles.iter().zip(&shift).all(|(p, d)| {
-        p.final_reveal - d >= params.reveal_min() - REVEAL_TOL
-            && p.final_reveal - d <= params.reveal_max() + REVEAL_TOL
+    let reveal_ok = piles.iter().enumerate().all(|(i, p)| {
+        let v = p.line - p.cut_fill;
+        v >= win0.lo[i] - REVEAL_TOL && v <= win0.hi[i] + REVEAL_TOL
     });
+    let _ = &shift;
     let compliant = solved
+        && slopes_ok(&s, &top, params)
         && max_angle <= params.max_angle_deg + params.angle_tolerance_deg
         && reveal_ok
         && min_top_ok
@@ -648,13 +728,12 @@ fn tightened(params: &Params, level: usize) -> Params {
 
 /// Cut (negative) or fill (positive), a multiple of `step`, that brings the
 /// reveal of a pile topped at `top` into the window: 0 when it already is.
-fn cut_fill_for(top: f64, z: f64, params: &Params, step: f64) -> f64 {
+fn cut_fill_for(line: f64, lo: f64, hi: f64, step: f64) -> f64 {
     const EPS: f64 = 1e-9;
-    let reveal = top - z;
-    if reveal > params.reveal_max() + EPS {
-        ((reveal - params.reveal_max()) / step - EPS).ceil() * step
-    } else if reveal < params.reveal_min() - EPS {
-        ((reveal - params.reveal_min()) / step + EPS).floor() * step
+    if line > hi + EPS {
+        ((line - hi) / step - EPS).ceil() * step
+    } else if line < lo - EPS {
+        ((line - lo) / step + EPS).floor() * step
     } else {
         0.0
     }
@@ -671,7 +750,7 @@ fn cut_fill_for(top: f64, z: f64, params: &Params, step: f64) -> f64 {
 /// optimisation) in a few hundred steps. `None` when no combination fits.
 fn round_profile(
     s: &[f64],
-    z: &[f64],
+    win: &Window,
     y: &[f64],
     drop: &[f64],
     min_top: &[Option<f64>],
@@ -690,7 +769,7 @@ fn round_profile(
                     if min_top[i].is_some_and(|m| v < m - 1e-9) {
                         return None;
                     }
-                    let c = cut_fill_for(v, z[i], params, step);
+                    let c = cut_fill_for(v, win.lo[i], win.hi[i], step);
                     if c.abs() > params.max_cut_fill + 1e-9 {
                         return None;
                     }
@@ -709,12 +788,20 @@ fn round_profile(
         let a2 = (c - b).atan2(s[i + 1] - s[i]);
         (a2 - a1).to_degrees().abs() <= limit
     };
+    // Span slope limit (when there is one), checked on the rounded values too.
+    let span_ok = |i: usize, a: f64, b: f64| {
+        params.max_span_slope_deg <= 0.0
+            || (b - a).atan2(s[i + 1] - s[i]).to_degrees().abs()
+                <= params.max_span_slope_deg + params.angle_tolerance_deg
+    };
     // best[a][b]: lowest cost of piles 0..=i with choice a at i-1 and b at i.
     const K: usize = 6;
     let mut best = [[f64::INFINITY; K]; K];
     for (a, ca) in cands[0].iter().enumerate() {
         for (b, cb) in cands[1].iter().enumerate() {
-            best[a][b] = ca.2 + cb.2;
+            if span_ok(0, ca.0, cb.0) {
+                best[a][b] = ca.2 + cb.2;
+            }
         }
     }
     // back[i][b][c]: the choice at pile i-1 on the best path to (b at i, c at i+1).
@@ -727,7 +814,7 @@ fn round_profile(
                     continue;
                 }
                 for (c, cc) in cands[i + 1].iter().enumerate() {
-                    if !angle_ok(i, ca.0, cb.0, cc.0) {
+                    if !angle_ok(i, ca.0, cb.0, cc.0) || !span_ok(i, cb.0, cc.0) {
                         continue;
                     }
                     let cost = best[a][b] + cc.2;
@@ -1303,5 +1390,57 @@ mod tests {
         }
         let ang = angle_diffs_deg(&r.piles.iter().map(|p| p.northing).collect::<Vec<_>>(), &r.piles.iter().map(|p| p.line).collect::<Vec<_>>());
         assert!(ang.iter().all(|a| a.abs() <= params.max_angle_deg + 1e-3), "angles on the tube {ang:?}");
+    }
+
+    #[test]
+    fn each_pile_keeps_its_own_lowest_and_highest_height() {
+        // ATI-like: tube at most 1.468 m over the ground at bearing piles and
+        // 1.476 m at the centre structure (part limits), at least 1.224 m.
+        let mut tr = ati(&[100.0, 100.3, 100.1, 100.5, 100.2, 100.6, 100.4, 100.8], 3);
+        for p in &mut tr.piles {
+            p.nominal = Some(1.47);
+            let (lo, hi) = if p.motor { (0.251, 0.495) } else { (1.112, 1.356) };
+            p.min_height = Some(lo + p.drop);
+            p.max_height = Some(hi + p.drop);
+        }
+        let params = Params {
+            round_step: 0.01,
+            delta_min: -0.5,
+            delta_max: 0.5,
+            max_angle_deg: 1.0,
+            ..Params::default()
+        };
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        assert_ne!(r.status, TrackerStatus::NonCompliant);
+        for (p, x) in tr.piles.iter().zip(&r.piles) {
+            let reveal = x.top - x.new_ground;
+            assert!(reveal >= p.min_height.unwrap() - p.drop - 1e-4, "{}: {reveal}", p.name);
+            assert!(reveal <= p.max_height.unwrap() - p.drop + 1e-4, "{}: {reveal}", p.name);
+        }
+    }
+
+    #[test]
+    fn span_and_tracker_slopes_are_limited() {
+        // A 10 % hill (5.7 deg) under a tracker allowed 5 deg overall and 6 deg per span.
+        let z: Vec<f64> = (0..9).map(|i| 100.0 + 0.1 * 8.9 * i as f64).collect();
+        let tr = tracker("S", &z, 8.9);
+        let params = Params {
+            max_span_slope_deg: 6.0,
+            max_tracker_slope_deg: 5.0,
+            ..Params::default()
+        };
+        let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
+        assert_eq!(r.status, TrackerStatus::Graded, "the hill needs cut/fill");
+        let y: Vec<f64> = r.piles.iter().map(|p| p.line).collect();
+        let s: Vec<f64> = tr.piles.iter().map(|p| p.northing).collect();
+        let whole = ((y[8] - y[0]) / (s[8] - s[0])).atan().to_degrees();
+        assert!(whole <= 5.0 + 1e-3, "tracker slope {whole}");
+        for i in 0..8 {
+            let a = ((y[i + 1] - y[i]) / (s[i + 1] - s[i])).atan().to_degrees();
+            assert!(a.abs() <= 6.0 + 1e-3, "span {i}: {a}");
+        }
+        // Without the limits the tracker simply follows the hill.
+        let free = optimize_tracker(&tr, &Params::default(), &AdmmSolver::default());
+        assert_eq!(free.status, TrackerStatus::Compliant);
     }
 }

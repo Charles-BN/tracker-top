@@ -181,6 +181,10 @@ pub struct PileState {
     pub nominal: Option<f64>,
     pub description: String,
     pub part_number: String,
+    /// Window of the line over the ground at this pile (lowest, highest): the
+    /// reveal (or tube-height) window around its design height, narrowed by
+    /// its part's own limits.
+    pub window: (f64, f64),
     pub result: Option<PileResultRow>,
     /// Top minus the line through the neighbouring rows' tops at this
     /// Northing (or, beside one row only, that row's profile at this row's
@@ -2213,6 +2217,8 @@ impl Store {
                     .iter()
                     .zip(&ev)
                     .map(|(p, e)| Pile {
+                        min_height: settings.pile_heights(&p.description, &p.pile_type).0,
+                        max_height: settings.pile_heights(&p.description, &p.pile_type).1,
                         drop: settings.pile_drop(&p.pile_type),
                         motor: settings.is_motor(&p.pile_type),
                         nominal: p.nominal,
@@ -2576,6 +2582,7 @@ impl Store {
                     flood_level: e.and_then(|e| settings.flood_water_level(e.z, flood_value)),
                     min_top: e.and_then(|e| settings.min_top(e.z, flood_value)),
                     nominal: p.nominal,
+                    window: settings.pile_window(p.nominal, &p.description, &p.pile_type),
                     description: p.description.clone(),
                     part_number: p.part_number.clone(),
                     result: results.remove(&p.pile_id),
@@ -3844,6 +3851,39 @@ mod tube_tests {
         }
         let csv = crate::export::piles_csv(&state, &s.settings().unwrap());
         assert!(csv.lines().next().unwrap().contains("Tube Height TTH (m)"));
+    }
+
+    #[test]
+    fn pile_part_limits_and_slopes_are_kept() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.import_file(Kind::Master, "gesf.csv", ati_master().as_bytes(), None, "t").unwrap();
+        let mut st = s.settings().unwrap();
+        st.delta_min = -0.5;
+        st.delta_max = 0.5;
+        st.max_angle_deg = 1.0;
+        st.max_span_slope_deg = 15.0;
+        st.max_tracker_slope_deg = 8.5;
+        // By part (Description) for the bearing piles of the 1.47 m rows, by type for the rest.
+        st.pile_limits = vec![
+            crate::settings::PileLimit { key: "1.47 interior w6x8.5 bg".into(), min_reveal_m: Some(1.112), max_reveal_m: Some(1.30) },
+            crate::settings::PileLimit { key: "BG".into(), min_reveal_m: Some(1.112), max_reveal_m: Some(1.559) },
+            crate::settings::PileLimit { key: "CS".into(), min_reveal_m: Some(0.251), max_reveal_m: Some(0.495) },
+        ];
+        s.set_settings(&st).unwrap();
+        s.optimize(false, "t", 1).unwrap();
+        let state = s.state().unwrap();
+        for p in &state.piles {
+            let r = p.result.as_ref().unwrap();
+            let reveal = r.top - r.new_ground;
+            let (lo, hi) = match (p.pile_type.as_str(), p.description.starts_with("1.47")) {
+                ("CS", _) => (0.251, 0.495),
+                (_, true) => (1.112, 1.30),
+                _ => (1.112, 1.559),
+            };
+            assert!(reveal >= lo - 1e-4 && reveal <= hi + 1e-4, "{} {}: reveal {reveal}", p.pile_id, p.description);
+            let drop = if p.pile_type == "CS" { 0.981 } else { 0.112 };
+            assert!((p.window.1 - (hi + drop)).abs() < 1e-9, "{}: window {:?}", p.pile_id, p.window);
+        }
     }
 
     #[test]

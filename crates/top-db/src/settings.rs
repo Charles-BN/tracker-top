@@ -51,6 +51,18 @@ impl Default for PileRule {
     }
 }
 
+/// A pile part's (or type's) own lowest and highest reveal: the top of pile
+/// above the ground, e.g. a clearance under the modules, or the pile length
+/// minus its minimum embedment. Matched on the master list's Description,
+/// else its Pile Type (ignoring case).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PileLimit {
+    pub key: String,
+    pub min_reveal_m: Option<f64>,
+    pub max_reveal_m: Option<f64>,
+}
+
 /// Weight of the pull towards the neighbouring rows when `align_rows` is on,
 /// relative to keeping the nominal reveal (see `top_core::align`).
 pub const ALIGN_WEIGHT: f64 = 10.0;
@@ -63,6 +75,13 @@ pub struct Settings {
     /// Pile types with their drop below the tube and their role. A type
     /// without a rule is a motor pile when its name says so (`HMP`, "Motor").
     pub pile_rules: Vec<PileRule>,
+    /// Lowest / highest reveal of pile parts or types (see `PileLimit`).
+    pub pile_limits: Vec<PileLimit>,
+    /// Steepest slope of one span of torque tube (deg, ATI's LTTS); 0 = none.
+    pub max_span_slope_deg: f64,
+    /// Steepest slope of a whole tracker, first pile to last (deg, ATI's
+    /// ATTS); 0 = none.
+    pub max_tracker_slope_deg: f64,
     /// Nominal reveal above ground (m); with `Technology::Tube`, the nominal
     /// torque-tube height (TTH). Rows with their own design height in the
     /// master list (`pile_design.nominal`) use theirs.
@@ -141,6 +160,9 @@ impl Default for Settings {
         Self {
             technology: Technology::Top,
             pile_rules: Vec::new(),
+            pile_limits: Vec::new(),
+            max_span_slope_deg: 0.0,
+            max_tracker_slope_deg: 0.0,
             reveal_nominal: p.reveal_nominal,
             delta_min: p.delta_min,
             delta_max: p.delta_max,
@@ -193,6 +215,8 @@ impl Settings {
             fixed_spans: self.fixed_spans,
             round_step: self.round_step,
             align_weight: if self.align_rows { ALIGN_WEIGHT } else { 0.0 },
+            max_span_slope_deg: self.max_span_slope_deg,
+            max_tracker_slope_deg: self.max_tracker_slope_deg,
             ..Params::default()
         }
     }
@@ -223,6 +247,13 @@ impl Settings {
             v["technology"] = serde_json::json!(self.technology);
             v["pile_rules"] = serde_json::json!(self.pile_rules);
         }
+        if !self.pile_limits.is_empty() {
+            v["pile_limits"] = serde_json::json!(self.pile_limits);
+        }
+        if self.max_span_slope_deg > 0.0 || self.max_tracker_slope_deg > 0.0 {
+            v["max_span_slope_deg"] = serde_json::json!(self.max_span_slope_deg);
+            v["max_tracker_slope_deg"] = serde_json::json!(self.max_tracker_slope_deg);
+        }
         v.to_string()
     }
 
@@ -232,6 +263,41 @@ impl Settings {
         self.pile_rules
             .iter()
             .find(|r| r.pile_type.trim().eq_ignore_ascii_case(t))
+    }
+
+    /// The limit for a pile: its Description's, else its Pile Type's.
+    pub fn pile_limit(&self, description: &str, pile_type: &str) -> Option<&PileLimit> {
+        let find = |k: &str| {
+            let k = k.trim();
+            (!k.is_empty())
+                .then(|| self.pile_limits.iter().find(|l| l.key.trim().eq_ignore_ascii_case(k)))
+                .flatten()
+        };
+        find(description).or_else(|| find(pile_type))
+    }
+
+    /// Lowest and highest height of the line over the ground a pile's own
+    /// limits allow (its reveal limits plus its drop), if it has any.
+    pub fn pile_heights(&self, description: &str, pile_type: &str) -> (Option<f64>, Option<f64>) {
+        let drop = self.pile_drop(pile_type);
+        match self.pile_limit(description, pile_type) {
+            Some(l) => (
+                l.min_reveal_m.filter(|v| v.is_finite()).map(|v| v + drop),
+                l.max_reveal_m.filter(|v| v.is_finite()).map(|v| v + drop),
+            ),
+            None => (None, None),
+        }
+    }
+
+    /// The window of the line over the ground at a pile: around its design
+    /// height, narrowed by its own limits.
+    pub fn pile_window(&self, nominal: Option<f64>, description: &str, pile_type: &str) -> (f64, f64) {
+        let nom = nominal.unwrap_or(self.reveal_nominal);
+        let (lo, hi) = self.pile_heights(description, pile_type);
+        (
+            (nom + self.delta_min).max(lo.unwrap_or(f64::NEG_INFINITY)),
+            (nom + self.delta_max).min(hi.unwrap_or(f64::INFINITY)),
+        )
     }
 
     /// How far a pile of this type sits below the line the optimiser works on (m).
@@ -322,6 +388,21 @@ impl Settings {
                  (use / for a subfolder)"
                     .into(),
             );
+        }
+        for l in &self.pile_limits {
+            if l.key.trim().is_empty() {
+                return Err("every pile limit needs a description or pile type".into());
+            }
+            for v in [l.min_reveal_m, l.max_reveal_m].into_iter().flatten() {
+                if !(v.is_finite() && (0.0..=10.0).contains(&v)) {
+                    return Err(format!("the reveal limits of \"{}\" must be between 0 and 10 m", l.key));
+                }
+            }
+            if let (Some(a), Some(b)) = (l.min_reveal_m, l.max_reveal_m)
+                && a > b
+            {
+                return Err(format!("\"{}\": the lowest reveal is above the highest", l.key));
+            }
         }
         for r in &self.pile_rules {
             if r.pile_type.trim().is_empty() {

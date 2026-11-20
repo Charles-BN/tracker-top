@@ -54,8 +54,9 @@ export function renderProfile(container, rows, settings, opts = {}) {
   const motorOf = (r) => r.motor ?? isMotorPile(r.type);
   // The window around each pile's design height (its row's own, else the nominal).
   const nomOf = (r) => r.nom ?? settings.reveal_nominal;
-  const minOf = (r) => nomOf(r) + settings.delta_min;
-  const maxOf = (r) => nomOf(r) + settings.delta_max;
+  // Each pile's window: its design height's, narrowed by its part's limits.
+  const minOf = (r) => r.wlo ?? nomOf(r) + settings.delta_min;
+  const maxOf = (r) => r.whi ?? nomOf(r) + settings.delta_max;
   const noms = [...new Set(rows.map((r) => nomOf(r).toFixed(2)))];
   const revMin = Math.min(...rows.map(minOf));
   const revMax = Math.max(...rows.map(maxOf));

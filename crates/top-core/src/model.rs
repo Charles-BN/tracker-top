@@ -28,6 +28,12 @@ pub struct Pile {
     /// Design height of the line above the ground at this pile (m), when the
     /// layout gives one per row; `None` uses `Params::reveal_nominal`.
     pub nominal: Option<f64>,
+    /// The pile's own lowest / highest height of the line above the ground
+    /// (m), e.g. from its type's clearance or its part's length minus the
+    /// minimum embedment, plus its drop. They narrow the window around
+    /// `nominal`; `None` adds nothing.
+    pub min_height: Option<f64>,
+    pub max_height: Option<f64>,
 }
 
 impl Pile {
@@ -58,6 +64,8 @@ impl Pile {
             min_top: None,
             drop: 0.0,
             nominal: None,
+            min_height: None,
+            max_height: None,
         }
     }
 }
