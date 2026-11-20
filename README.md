@@ -219,6 +219,41 @@ tracker is 11.5 mm (median), 98 mm (95th percentile) and 215 mm at most (steep 1
 The Excel/CSV exports carry `Set-out Easting`, `Set-out Northing`, `Shift Along Tracker (m)`, and
 the ArcGIS export draws piles at their set-out position.
 
+### Tracker technologies (Nextracker, ATI)
+
+**Settings → Design limits → Tracker technology** says where the heights are given:
+
+- **The tops of pile** (Nextracker NX Horizon / XTR, the default): every pile ends at the tube; the
+  window is the **reveal** (top of pile above the ground).
+- **The torque tube** (ATI OmniTrack): pile types sit at different depths below the tube. The
+  optimiser works on the tube: the window is the **tube height above the ground (TTH)**, and the
+  angle limit, set-out, flood rule and row alignment apply to the tube. Each pile's **top = tube −
+  its type's drop**, rounded to the centimetre (what the installers drive to).
+
+Its **Pile types** table lists the master list's types with their number of piles, each one's
+**drop below the tube** (tube mode) and whether it **carries the drive** (the motor pile, kept fixed
+by the set-out; a type without a rule is a motor pile when its name says so: `HMP`, `SMP`, "Motor").
+
+**An ATI layout fills this in on import.** A master list with both tube and pile-top elevations
+(`Z TT` and `Z Pile`) gives each type's drop (median of Z TT − Z Pile), and the type found exactly
+once in nearly every tracker is the drive; a project still on the default settings is switched to
+heights on the torque tube. On the GESF list (76,286 piles, 4,970 trackers `PCS5.34-S02-R01`):
+**BG** (bearing) 0.112 m below the tube, **CS** (centre structure, the drive) 0.981 m below. Its
+**Row TTH** column gives each row's own design height (1.47 m for 71,431 piles, 1.67 m for 4,571,
+1.81 m for 284): each row's window is the same offsets around its own height, and the nominal TTH
+becomes the most common one. *Description* and *Part Number* are kept (pile table, exports).
+Semicolon files with decimal commas are read as they are.
+
+Checked on that list: the tops come out within 3 mm of the designer's `Z Pile` for both types
+(median; centimetre rounding), every tracker is anchored on its CS pile, and the TTH is the row's
+design height for 98 % of piles. Exports have *Tube Z*, *Pile Stick-up* (top above the ground),
+*Design Height*, *Description* and *Part Number* columns, and the reveal column is headed *Tube
+Height TTH (m)*. Results, the profile (tube line, each pile's top below it), the Map and the 3D view
+use the same words.
+
+The design limits (window, angle limit between spans) are the project's own: enter the tracker
+maker's values for an ATI project.
+
 ### Neighbouring rows (alignment)
 
 When the trackers backtrack in the early morning and late evening, a row that sits lower than the
@@ -568,5 +603,7 @@ docs/             how the code works
 - Databases made by the 0.2.0 preview (schema 1) are refused: start a new one and import the master
   list again. Databases of versions 0.3 to 0.5 (schemas 2 and 3) are upgraded in place; an older
   program refuses a database once a 0.6 program has opened it (schema 4), so update every computer
-  that shares a database.
+  that shares a database. A database with heights on the torque tube (ATI, see *Tracker
+  technologies*) is marked schema 5: programs older than 0.7 refuse it (they would put every pile
+  top on the tube); other databases stay schema 4.
 - Real Google sign-in / Drive API (needs the OAuth client ID, see *Shared database*).

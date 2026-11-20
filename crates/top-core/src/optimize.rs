@@ -62,13 +62,16 @@ impl TrackerStatus {
 
 #[derive(Clone, Debug)]
 pub struct PileResult {
-    /// Optimised top-of-pile elevation (m).
+    /// Optimised top-of-pile elevation (m): `line - Pile::drop`.
     pub top: f64,
+    /// Height of the line the optimiser works on (m): the tops of pile, or
+    /// the torque tube when pile types sit at different depths (see `Pile::drop`).
+    pub line: f64,
     /// Cut (negative) / fill (positive) applied to the ground (m).
     pub cut_fill: f64,
     /// Ground elevation after cut/fill: `z_lidar + cut_fill`.
     pub new_ground: f64,
-    /// `top - new_ground`.
+    /// `line - new_ground`: the reveal, or the torque-tube height (TTH).
     pub final_reveal: f64,
     /// Angle change at this pile between the two adjacent spans (deg); 0 at the ends.
     pub angle_diff_deg: f64,
@@ -132,34 +135,36 @@ fn outlier_flags(z: &[f64], alpha: f64) -> Vec<bool> {
 fn passthrough(
     tracker: &Tracker,
     z: &[f64],
+    zq: &[f64],
     min_top: &[Option<f64>],
     flags: Vec<bool>,
     params: &Params,
     status: TrackerStatus,
 ) -> TrackerResult {
-    let piles = z
-        .iter()
-        .zip(min_top)
-        .zip(flags)
-        .zip(&tracker.piles)
-        .map(|(((&z, &mt), lidar_outlier), pile)| {
+    let piles = (0..z.len())
+        .map(|i| {
+            let pile = &tracker.piles[i];
             let step = params.round_step;
-            let nominal = round_to(z + params.reveal_nominal, step);
+            let drop = pile.drop;
+            // Lines whose pile top falls on the rounding grid.
+            let nominal = round_to(zq[i] + params.reveal_nominal - drop, step) + drop;
             let lowest = |m: f64| {
                 if step > 0.0 {
-                    (m / step - 1e-9).ceil() * step
+                    ((m - drop) / step - 1e-9).ceil() * step + drop
                 } else {
                     m
                 }
             };
-            let top = mt.map_or(nominal, |m| nominal.max(lowest(m)));
+            let mt = min_top[i];
+            let line = mt.map_or(nominal, |m| nominal.max(lowest(m)));
             PileResult {
-                top,
+                top: line - drop,
+                line,
                 cut_fill: 0.0,
-                new_ground: z,
-                final_reveal: top - z,
+                new_ground: z[i],
+                final_reveal: line - z[i],
                 angle_diff_deg: 0.0,
-                lidar_outlier,
+                lidar_outlier: flags[i],
                 min_top_active: mt.is_some_and(|m| m > nominal),
                 easting: pile.easting,
                 northing: pile.northing,
@@ -362,7 +367,8 @@ fn optimize_placed(
     if !params.fixed_spans || tracker.piles.len() < 2 || res.status == TrackerStatus::InvalidInput {
         return res;
     }
-    let tops = |r: &TrackerResult| r.piles.iter().map(|p| p.top).collect::<Vec<f64>>();
+    // Spans run along the tube: the set-out works on the line.
+    let tops = |r: &TrackerResult| r.piles.iter().map(|p| p.line).collect::<Vec<f64>>();
     // Positions are rounded (when rounding is on) before the tracker is
     // optimised at them, so that the tops are checked at exactly the
     // positions that will be set out.
@@ -449,9 +455,18 @@ fn optimize_at(
         .map(|p| p.min_top.filter(|m| m.is_finite()))
         .collect();
     let flags = outlier_flags(&z, params.lidar_sigma_alpha);
+    // A row with its own design height: the same problem as with the usual
+    // nominal height over a ground raised by the difference.
+    let shift: Vec<f64> = tracker
+        .piles
+        .iter()
+        .map(|p| p.nominal.filter(|v| v.is_finite()).map_or(0.0, |v| v - params.reveal_nominal))
+        .collect();
+    let zq: Vec<f64> = z.iter().zip(&shift).map(|(z, d)| z + d).collect();
+    let drop: Vec<f64> = tracker.piles.iter().map(|p| p.drop).collect();
 
     if n < 3 {
-        return passthrough(tracker, &z, &min_top, flags, params, TrackerStatus::Skipped);
+        return passthrough(tracker, &z, &zq, &min_top, flags, params, TrackerStatus::Skipped);
     }
 
     let s = tracker.chainage();
@@ -461,6 +476,7 @@ fn optimize_at(
         return passthrough(
             tracker,
             &z,
+            &zq,
             &min_top,
             flags,
             params,
@@ -468,9 +484,9 @@ fn optimize_at(
         );
     }
 
-    let z_ref = z.iter().sum::<f64>() / n as f64;
+    let z_ref = zq.iter().sum::<f64>() / n as f64;
     let solve = |p: &Params| {
-        let sol = solver.solve(&build_qp(&s, &z, &min_top, targets, z_ref, p));
+        let sol = solver.solve(&build_qp(&s, &zq, &min_top, targets, z_ref, p));
         let top: Vec<f64> = (0..n).map(|i| sol.x[i] + z_ref).collect();
         let cf: Vec<f64> = (0..n).map(|i| sol.x[n + i]).collect();
         (top, cf, sol)
@@ -509,7 +525,7 @@ fn optimize_at(
                 top = t;
                 cf = c;
             }
-            if let Some((t, c)) = round_profile(&s, &z, &top, &min_top, params, step) {
+            if let Some((t, c)) = round_profile(&s, &zq, &top, &drop, &min_top, params, step) {
                 if graded(&c) && !exact_graded {
                     fallback.get_or_insert((t, c, on_min.clone()));
                     continue;
@@ -529,8 +545,8 @@ fn optimize_at(
         if !done {
             // Nearest values: the checks below report the tracker NonCompliant.
             for i in 0..n {
-                top[i] = round_to(top[i], step);
-                cf[i] = cut_fill_for(top[i], z[i], params, step);
+                top[i] = round_to(top[i] - drop[i], step) + drop[i];
+                cf[i] = cut_fill_for(top[i], zq[i], params, step);
             }
         }
     }
@@ -539,9 +555,11 @@ fn optimize_at(
     let max_angle = angles.iter().fold(0.0_f64, |m, a| m.max(a.abs()));
     let max_cf = cf.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
 
+    // `top` here is the line; each pile's top sits `drop` below it.
     let piles: Vec<PileResult> = (0..n)
         .map(|i| PileResult {
-            top: top[i],
+            top: top[i] - drop[i],
+            line: top[i],
             cut_fill: cf[i],
             new_ground: z[i] + cf[i],
             final_reveal: top[i] - (z[i] + cf[i]),
@@ -560,10 +578,10 @@ fn optimize_at(
     let min_top_ok = piles
         .iter()
         .zip(&min_top)
-        .all(|(p, mt)| mt.is_none_or(|m| p.top >= m - REVEAL_TOL));
-    let reveal_ok = piles.iter().all(|p| {
-        p.final_reveal >= params.reveal_min() - REVEAL_TOL
-            && p.final_reveal <= params.reveal_max() + REVEAL_TOL
+        .all(|(p, mt)| mt.is_none_or(|m| p.line >= m - REVEAL_TOL));
+    let reveal_ok = piles.iter().zip(&shift).all(|(p, d)| {
+        p.final_reveal - d >= params.reveal_min() - REVEAL_TOL
+            && p.final_reveal - d <= params.reveal_max() + REVEAL_TOL
     });
     let compliant = solved
         && max_angle <= params.max_angle_deg + params.angle_tolerance_deg
@@ -642,7 +660,7 @@ fn cut_fill_for(top: f64, z: f64, params: &Params, step: f64) -> f64 {
     }
 }
 
-/// Rounded tops (multiples of `step`) close to the exact tops `y` that keep
+/// Rounded line heights (pile tops, `line - drop`, multiples of `step`) close to the exact line `y` that keep
 /// every limit: reveal window (with rounded cut/fill where needed), cut/fill
 /// cap, lowest top, and the true angle change at every interior pile.
 ///
@@ -655,6 +673,7 @@ fn round_profile(
     s: &[f64],
     z: &[f64],
     y: &[f64],
+    drop: &[f64],
     min_top: &[Option<f64>],
     params: &Params,
     step: f64,
@@ -663,10 +682,11 @@ fn round_profile(
     // Candidates per pile: (top, cut/fill, cost).
     let cands: Vec<Vec<(f64, f64, f64)>> = (0..n)
         .map(|i| {
-            let base = (y[i] / step).floor() as i64;
+            // Candidates put the pile's top (the line minus its drop) on the grid.
+            let base = ((y[i] - drop[i]) / step).floor() as i64;
             (-2..=3)
                 .filter_map(|k| {
-                    let v = (base + k) as f64 * step;
+                    let v = (base + k) as f64 * step + drop[i];
                     if min_top[i].is_some_and(|m| v < m - 1e-9) {
                         return None;
                     }
@@ -810,16 +830,8 @@ mod tests {
         let piles = z
             .iter()
             .enumerate()
-            .map(|(i, &z)| Pile {
-                name: format!("{id}.{:02}", i + 1),
-                tracker: id.into(),
-                block: "1".into(),
-                section: "1".into(),
-                pile_type: String::new(),
-                easting: 1000.0,
-                northing: 5000.0 + spacing * i as f64,
-                z_lidar: z,
-                min_top: None,
+            .map(|(i, &z)| {
+                Pile::new(format!("{id}.{:02}", i + 1), id, "1", "1", "", 1000.0, 5000.0 + spacing * i as f64, z)
             })
             .collect();
         Tracker {
@@ -1081,6 +1093,7 @@ mod tests {
             9.415,
         );
         tr.piles[7].pile_type = "HMP-20".into();
+        tr.piles[7].motor = true;
         let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
         check(&tr, &r, &params);
         assert_eq!(r.anchor, Some((7, true)));
@@ -1121,6 +1134,7 @@ mod tests {
                 .collect();
             let mut tr = tracker(&format!("T{k}"), &z, 9.0);
             tr.piles[7].pile_type = "SMP-20".into();
+            tr.piles[7].motor = true;
             let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
             assert_ne!(
                 r.status,
@@ -1234,6 +1248,7 @@ mod tests {
                 .collect();
             let mut tr = tracker(&format!("T{k}"), &z, 9.0);
             tr.piles[7].pile_type = "SMP-20".into();
+            tr.piles[7].motor = true;
             let r = optimize_tracker(&tr, &params, &AdmmSolver::default());
             check(&tr, &r, &params);
             for p in &r.piles {
@@ -1244,5 +1259,49 @@ mod tests {
             // Rounding each end of a span by up to 5 mm.
             assert!(r.max_span_error <= 0.0101, "T{k}: {}", r.max_span_error);
         }
+    }
+
+    /// ATI OmniTrack-like: heights on the torque tube, bearing piles 0.112 m
+    /// and the centre structure (motor) 0.981 m below it, rows at 1.67 m.
+    fn ati(z: &[f64], cs: usize) -> Tracker {
+        let mut tr = tracker("A", z, 8.9);
+        for (i, p) in tr.piles.iter_mut().enumerate() {
+            p.pile_type = if i == cs { "CS" } else { "BG" }.into();
+            p.drop = if i == cs { 0.981 } else { 0.112 };
+            p.motor = i == cs;
+            p.nominal = Some(1.67);
+        }
+        tr
+    }
+
+    #[test]
+    fn torque_tube_heights_with_pile_drops() {
+        let params = Params {
+            round_step: 0.01,
+            fixed_spans: true,
+            ..Params::default()
+        };
+        // Flat: the tube at 1.67 m (its row's height), each top its drop below.
+        let r = optimize_tracker(&ati(&[100.0; 10], 1), &params, &AdmmSolver::default());
+        assert_eq!(r.status, TrackerStatus::Compliant);
+        assert_eq!(r.anchor, Some((1, true)), "the centre structure is kept fixed");
+        for (i, p) in r.piles.iter().enumerate() {
+            assert!((p.line - 101.67).abs() < 0.006, "{}", p.line);
+            let drop = if i == 1 { 0.981 } else { 0.112 };
+            assert!((p.line - p.top - drop).abs() < 1e-9);
+            assert!(on_grid(p.top, 0.01), "pile top {} on the centimetre", p.top);
+            assert!((p.final_reveal - 1.67).abs() < 0.006, "tube height {}", p.final_reveal);
+        }
+        // Rough ground: the window is the row's own, around 1.67 m.
+        let mut rng = Lcg(7);
+        let z: Vec<f64> = (0..16).map(|i| 100.0 + 0.02 * i as f64 + 0.15 * (rng.next() - 0.5)).collect();
+        let r = optimize_tracker(&ati(&z, 8), &params, &AdmmSolver::default());
+        assert_ne!(r.status, TrackerStatus::NonCompliant);
+        for p in &r.piles {
+            assert!(p.final_reveal >= 1.67 - 0.25 - 1e-4 && p.final_reveal <= 1.67 + 0.15 + 1e-4, "{}", p.final_reveal);
+            assert!(on_grid(p.top, 0.01));
+        }
+        let ang = angle_diffs_deg(&r.piles.iter().map(|p| p.northing).collect::<Vec<_>>(), &r.piles.iter().map(|p| p.line).collect::<Vec<_>>());
+        assert!(ang.iter().all(|a| a.abs() <= params.max_angle_deg + 1e-3), "angles on the tube {ang:?}");
     }
 }

@@ -20,7 +20,7 @@ const fn col(key: &'static str, header: &'static str, group: &'static str) -> Co
 }
 
 /// Every column of the Piles sheet, in the order of `pile_cells`.
-pub const COLUMNS: [Column; 33] = [
+pub const COLUMNS: [Column; 38] = [
     col("pile_id", "Pile ID", "Pile"),
     col("block", "Block", "Pile"),
     col("section", "Section", "Pile"),
@@ -28,6 +28,9 @@ pub const COLUMNS: [Column; 33] = [
     col("tracker_type", "Tracker Type", "Pile"),
     col("pile_type", "Pile Type", "Pile"),
     col("color", "Color", "Pile"),
+    col("description", "Description", "Pile"),
+    col("part_number", "Part Number", "Pile"),
+    col("design_height", "Design Height (m)", "Pile"),
     col("easting", "Easting", "Position"),
     col("northing", "Northing", "Position"),
     col("set_easting", "Set-out Easting", "Position"),
@@ -48,7 +51,9 @@ pub const COLUMNS: [Column; 33] = [
     col("new_ground", "NEW_ZG", "Result"),
     col("cut_fill", "Cut/Fill (m)", "Result"),
     col("top", "ToP", "Result"),
+    col("tube_z", "Tube Z", "Result"),
     col("reveal", "Reveal (m)", "Result"),
+    col("stick_up", "Pile Stick-up (m)", "Result"),
     col("angle", "Angle Diff (deg)", "Result"),
     col("status", "Tracker Status", "Result"),
     col("up_to_date", "Up To Date", "Result"),
@@ -207,6 +212,9 @@ fn pile_cells(p: &PileState, t: &TrackerState, dc: usize) -> Vec<Cell> {
         Cell::Text(p.tracker_type.clone()),
         Cell::Text(p.pile_type.clone()),
         Cell::Text(p.color.clone()),
+        Cell::Text(p.description.clone()),
+        Cell::Text(p.part_number.clone()),
+        opt(p.nominal, 3),
         Cell::Num(p.easting, 4),
         Cell::Num(p.northing, 4),
         opt(r.and_then(|r| r.set_easting), dc),
@@ -231,7 +239,9 @@ fn pile_cells(p: &PileState, t: &TrackerState, dc: usize) -> Vec<Cell> {
         opt(r.map(|r| r.new_ground), dc),
         opt(r.map(|r| r.cut_fill), dc),
         opt(r.map(|r| r.top), dc),
+        opt(r.map(|r| r.line), 4),
         opt(r.map(|r| r.reveal), dc),
+        opt(r.map(|r| r.top - r.new_ground), dc),
         opt(r.map(|r| r.angle_diff_deg), 4),
         Cell::Text(t.status.clone()),
         Cell::Text(if t.run_id.is_none() {
@@ -270,8 +280,16 @@ fn pile_rows<'a>(
         })
 }
 
-fn headers(cols: &[usize]) -> Vec<&'static str> {
-    cols.iter().map(|&i| COLUMNS[i].header).collect()
+/// Column headers; with heights on the torque tube the reveal column is the
+/// tube height (TTH).
+fn headers(cols: &[usize], settings: &Settings) -> Vec<&'static str> {
+    let tube = settings.technology == crate::settings::Technology::Tube;
+    cols.iter()
+        .map(|&i| match COLUMNS[i].key {
+            "reveal" if tube => "Tube Height TTH (m)",
+            _ => COLUMNS[i].header,
+        })
+        .collect()
 }
 
 fn csv_quote(s: &str) -> String {
@@ -294,7 +312,7 @@ pub fn piles_csv_with(
     settings: &Settings,
 ) -> Result<String, String> {
     let cols = spec.column_indices()?;
-    let mut out = headers(&cols).join(",");
+    let mut out = headers(&cols, settings).join(",");
     out.push('\n');
     for row in pile_rows(state, spec, &cols, settings.decimals()) {
         let line: Vec<String> = row
@@ -444,7 +462,7 @@ pub fn workbook_with(
             write_sheet(
                 ws,
                 &f,
-                &headers(&cols),
+                &headers(&cols, settings),
                 pile_rows(state, spec, &cols, settings.decimals()),
             )?;
         }

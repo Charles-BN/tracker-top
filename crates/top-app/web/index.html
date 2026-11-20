@@ -206,7 +206,20 @@
       <div class="settings-body">
     <form id="settings-form" class="stack">
       <div class="card" data-group="limits">
-        <div class="card-head"><h2>Tracker &amp; reveal</h2><span class="tag">re-optimises every tracker</span></div>
+        <div class="card-head"><h2>Tracker technology</h2><span class="tag">re-optimises every tracker</span></div>
+        <label class="field" style="max-width:520px"><span>Heights are given on</span>
+          <select name="technology">
+            <option value="top">The tops of pile: every pile ends at the tube (Nextracker NX Horizon / XTR)</option>
+            <option value="tube">The torque tube: pile types sit at different depths below it (ATI OmniTrack)</option>
+          </select>
+          <small id="tech-help"></small>
+        </label>
+        <div class="sub-head" style="margin-top:12px"><h3>Pile types</h3></div>
+        <div class="table-wrap"><table class="pile-rules" id="pile-rules"></table></div>
+        <details class="more"><summary>How these are used</summary><p>With heights on the torque tube, the optimiser works on the tube: the window, the angle limit, the set-out and the alignment of neighbouring rows all apply to it, and each pile's top is the tube minus its type's drop, rounded to the centimetre (what the installers drive to). The motor pile (the drive, ATI's centre structure) is the pile the set-out keeps fixed. A master list giving both tube and pile-top elevations (ATI: <i>Z TT</i>, <i>Z Pile</i>) fills this in on import, and its row heights (<i>Row TTH</i>) are used row by row.</p></details>
+      </div>
+      <div class="card" data-group="limits">
+        <div class="card-head"><h2 id="opt-title">Tracker &amp; reveal</h2><span class="tag">re-optimises every tracker</span></div>
         <div class="settings-grid" id="settings-opt"></div>
       </div>
       <div class="card" data-group="limits">

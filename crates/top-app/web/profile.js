@@ -1,7 +1,8 @@
 // Tracker profile: elevation along the tracker, one axis (metres).
-// Survey ground and LIDAR ground, ground after cut/fill, the allowed reveal
-// window and the optimised top of pile (motor piles marked), with a per-pile
-// hover tooltip. Can be shown full screen, with pile numbers.
+// Survey ground and LIDAR ground, ground after cut/fill, the allowed window
+// (reveal, or torque-tube height) and the optimised line: the tops of pile,
+// or the torque tube with each pile's top below it (motor piles marked), with
+// a per-pile hover tooltip. Can be shown full screen, with pile numbers.
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -35,8 +36,9 @@ export function isMotorPile(type) {
 }
 
 /**
- * rows: [{ id, s, z, zs, zl, ng, top, rev, ang, cf, zsrc, type }] ordered along the tracker.
- * settings: { reveal_nominal, delta_min, delta_max, max_angle_deg }
+ * rows: [{ id, s, z, zs, zl, ng, top, line, nom, motor, rev, ang, cf, zsrc, type }] ordered along the tracker
+ * (line: the torque tube when heights are on it; nom: the row's own design height; motor: carries the drive).
+ * settings: { reveal_nominal, delta_min, delta_max, max_angle_deg, technology }
  * opts: { height, labels } (full-screen view: taller, pile numbers shown)
  */
 export function renderProfile(container, rows, settings, opts = {}) {
@@ -46,8 +48,17 @@ export function renderProfile(container, rows, settings, opts = {}) {
   container.classList.add('profile');
   const hasResult = rows.some((r) => r.top != null);
   const hasCut = rows.some((r) => r.cf != null && Math.abs(r.cf) > 0.0005);
-  const revMin = settings.reveal_nominal + settings.delta_min;
-  const revMax = settings.reveal_nominal + settings.delta_max;
+  const tube = settings.technology === 'tube';
+  const word = tube ? 'tube height' : 'reveal';
+  const lineOf = (r) => r.line ?? r.top;
+  const motorOf = (r) => r.motor ?? isMotorPile(r.type);
+  // The window around each pile's design height (its row's own, else the nominal).
+  const nomOf = (r) => r.nom ?? settings.reveal_nominal;
+  const minOf = (r) => nomOf(r) + settings.delta_min;
+  const maxOf = (r) => nomOf(r) + settings.delta_max;
+  const noms = [...new Set(rows.map((r) => nomOf(r).toFixed(2)))];
+  const revMin = Math.min(...rows.map(minOf));
+  const revMax = Math.max(...rows.map(maxOf));
   const hasFlood = rows.some((r) => r.flvl != null);
   const raised = rows.some((r) => r.mta);
 
@@ -57,14 +68,15 @@ export function renderProfile(container, rows, settings, opts = {}) {
   const items = [];
   const hasSurvey = rows.some((r) => r.zs != null);
   const hasLidar = rows.some((r) => r.zl != null);
-  const hasMotor = rows.some((r) => isMotorPile(r.type));
-  if (hasResult) items.push('<span class="item"><span class="ln" style="border-color:var(--s1)"></span>Top of pile (optimised)</span>');
+  const hasMotor = rows.some(motorOf);
+  if (hasResult) items.push(`<span class="item"><span class="ln" style="border-color:var(--s1)"></span>${tube ? 'Torque tube (optimised)' : 'Top of pile (optimised)'}</span>`);
+  if (hasResult && tube) items.push('<span class="item"><span class="top-key"></span>Top of pile</span>');
   if (hasMotor) items.push('<span class="item"><span class="motor-key"></span>Motor pile (M)</span>');
   if (hasSurvey) items.push('<span class="item"><span class="ln" style="border-color:var(--ink)"></span>Survey ground</span>');
   if (hasLidar) items.push('<span class="item"><span class="ln dash" style="border-color:var(--muted)"></span>LIDAR ground</span>');
   if (hasCut) items.push('<span class="item"><span class="ln dash" style="border-color:var(--s2)"></span>Ground after cut/fill</span>');
   if (hasFlood) items.push('<span class="item"><span class="ln dash" style="border-color:var(--s3)"></span>Flood water level</span>');
-  items.push(`<span class="item"><span class="sw" style="background:var(--band)"></span>Allowed reveal ${revMin.toFixed(2)}–${revMax.toFixed(2)} m${raised ? ', raised for flood' : ''}</span>`);
+  items.push(`<span class="item"><span class="sw" style="background:var(--band)"></span>Allowed ${word} ${revMin.toFixed(2)}–${revMax.toFixed(2)} m${noms.length === 1 && rows[0].nom != null ? ` (row ${noms[0]} m)` : ''}${raised ? ', raised for flood' : ''}</span>`);
   legend.innerHTML = items.join('');
   container.appendChild(legend);
 
@@ -81,7 +93,8 @@ export function renderProfile(container, rows, settings, opts = {}) {
     if (r.zl != null) ys.push(r.zl);
     if (r.ng != null) ys.push(r.ng);
     if (r.top != null) ys.push(r.top);
-    if (base(r) != null) ys.push(base(r) + revMax);
+    if (lineOf(r) != null) ys.push(lineOf(r));
+    if (base(r) != null) ys.push(base(r) + maxOf(r));
     if (r.flvl != null) ys.push(r.flvl);
     if (r.mintop != null) ys.push(r.mintop);
   }
@@ -110,9 +123,9 @@ export function renderProfile(container, rows, settings, opts = {}) {
   const withBase = rows.filter((r) => base(r) != null);
   // Allowed band for the top: the reveal window, its bottom raised to the
   // flood minimum where there is one.
-  const low = (r) => Math.max(base(r) + revMin, r.mintop ?? -Infinity);
+  const low = (r) => Math.max(base(r) + minOf(r), r.mintop ?? -Infinity);
   if (withBase.length > 1) {
-    const up = withBase.map((r) => `${x(r.s)},${y(Math.max(base(r) + revMax, low(r)))}`);
+    const up = withBase.map((r) => `${x(r.s)},${y(Math.max(base(r) + maxOf(r), low(r)))}`);
     const lo = withBase.slice().reverse().map((r) => `${x(r.s)},${y(low(r))}`);
     el('polygon', { points: [...up, ...lo].join(' '), fill: 'var(--band)', stroke: 'none' }, svg);
   }
@@ -122,8 +135,14 @@ export function renderProfile(container, rows, settings, opts = {}) {
   // Pile shafts (motor piles thicker).
   for (const r of rows) {
     if (r.top != null && base(r) != null) {
-      const motor = isMotorPile(r.type);
+      const motor = motorOf(r);
       el('line', { x1: x(r.s), x2: x(r.s), y1: y(base(r)), y2: y(r.top), stroke: motor ? 'var(--ink-2)' : 'var(--muted)', 'stroke-width': motor ? 2.5 : 1 }, svg);
+      // Heights on the tube: what sits between the pile top and the tube
+      // (bearing, or the drive's centre structure), drawn thin.
+      if (tube && Math.abs(lineOf(r) - r.top) > 0.001) {
+        el('line', { x1: x(r.s), x2: x(r.s), y1: y(r.top), y2: y(lineOf(r)), stroke: 'var(--axis)', 'stroke-width': 1, 'stroke-dasharray': '2 2' }, svg);
+        el('line', { x1: x(r.s) - 4, x2: x(r.s) + 4, y1: y(r.top), y2: y(r.top), stroke: motor ? 'var(--ink-2)' : 'var(--muted)', 'stroke-width': 2 }, svg);
+      }
     }
   }
   // LIDAR ground (dashed), then survey ground (solid, a dot at each surveyed
@@ -143,17 +162,18 @@ export function renderProfile(container, rows, settings, opts = {}) {
   if (hasFlood) line(rows.filter((r) => r.flvl != null).map((r) => `${x(r.s)},${y(r.flvl)}`), { stroke: 'var(--s3)', 'stroke-dasharray': '2 4' });
   if (hasCut) line(rows.filter((r) => r.ng != null).map((r) => `${x(r.s)},${y(r.ng)}`), { stroke: 'var(--s2)', 'stroke-dasharray': '5 4' });
   if (hasResult) {
-    line(rows.filter((r) => r.top != null).map((r) => `${x(r.s)},${y(r.top)}`), { stroke: 'var(--s1)' });
+    line(rows.filter((r) => r.top != null).map((r) => `${x(r.s)},${y(lineOf(r))}`), { stroke: 'var(--s1)' });
     for (const r of rows) {
       if (r.top == null) continue;
       const over = r.ang != null && Math.abs(r.ang) > settings.max_angle_deg + 0.001;
       const fill = over ? 'var(--critical)' : 'var(--s1)';
-      if (isMotorPile(r.type)) {
+      const yl = y(lineOf(r));
+      if (motorOf(r)) {
         // Motor pile: a larger outlined square and an "M".
-        el('rect', { x: x(r.s) - 6, y: y(r.top) - 6, width: 12, height: 12, rx: 2, fill: 'var(--surface)', stroke: fill, 'stroke-width': 3 }, svg);
-        el('text', { x: x(r.s), y: y(r.top) - 11, 'text-anchor': 'middle', class: 'tick motor-label' }, svg).textContent = 'M';
+        el('rect', { x: x(r.s) - 6, y: yl - 6, width: 12, height: 12, rx: 2, fill: 'var(--surface)', stroke: fill, 'stroke-width': 3 }, svg);
+        el('text', { x: x(r.s), y: yl - 11, 'text-anchor': 'middle', class: 'tick motor-label' }, svg).textContent = 'M';
       } else {
-        el('circle', { cx: x(r.s), cy: y(r.top), r: 4, fill, stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
+        el('circle', { cx: x(r.s), cy: yl, r: 4, fill, stroke: 'var(--surface)', 'stroke-width': 2 }, svg);
       }
     }
   }
@@ -172,7 +192,7 @@ export function renderProfile(container, rows, settings, opts = {}) {
   // Full screen: pile numbers (last part of the ID) along the top.
   if (opts.labels) {
     for (const r of rows) {
-      el('text', { x: x(r.s), y: 14, 'text-anchor': 'middle', class: 'tick' }, svg).textContent = String(r.id).split('.').pop();
+      el('text', { x: x(r.s), y: 14, 'text-anchor': 'middle', class: 'tick' }, svg).textContent = String(r.id).split(/[.\-_ ]/).pop();
     }
   }
 
@@ -191,14 +211,16 @@ export function renderProfile(container, rows, settings, opts = {}) {
     cross.setAttribute('x1', x(best.s)); cross.setAttribute('x2', x(best.s));
     cross.setAttribute('visibility', 'visible');
     const used = (k) => (best.zsrc === k ? ' (in use)' : '');
-    tip.innerHTML = `<b>${best.id}</b>${isMotorPile(best.type) ? ' <span class="muted">motor pile</span>' : ''}
+    tip.innerHTML = `<b>${best.id}</b>${motorOf(best) ? ' <span class="muted">motor pile</span>' : ''}${best.type ? ` <span class="muted">${best.type}</span>` : ''}
       ${best.zs != null ? `<div class="row"><span>Survey ground${used('survey')}</span><span class="num">${fmt(best.zs)}</span></div>` : '<div class="row"><span>Survey ground</span><span class="num muted">not surveyed</span></div>'}
       ${best.zl != null ? `<div class="row"><span>LIDAR ground${used('lidar')}</span><span class="num">${fmt(best.zl)}</span></div>` : ''}
       ${best.zs != null && best.zl != null ? `<div class="row"><span>Survey − LIDAR</span><span class="num">${fmt(best.zs - best.zl, dc)}</span></div>` : ''}
       ${hasCut ? `<div class="row"><span>Cut / fill</span><span class="num">${fmt(best.cf, dc)}</span></div>` : ''}
       ${best.flvl != null ? `<div class="row"><span>Flood water level</span><span class="num">${fmt(best.flvl, dc)}</span></div><div class="row"><span>Lowest allowed top</span><span class="num">${fmt(best.mintop, dc)}</span></div>` : ''}
-      <div class="row"><span>Top of pile${best.mta ? ' (raised for flood)' : ''}</span><span class="num">${fmt(best.top, dc)}</span></div>
-      <div class="row"><span>Reveal</span><span class="num">${fmt(best.rev, dc)}</span></div>
+      ${tube ? `<div class="row"><span>Torque tube${best.mta ? ' (raised for flood)' : ''}</span><span class="num">${fmt(lineOf(best), dc + 1)}</span></div>` : ''}
+      <div class="row"><span>Top of pile${best.mta && !tube ? ' (raised for flood)' : ''}</span><span class="num">${fmt(best.top, dc)}</span></div>
+      <div class="row"><span>${tube ? 'Tube height (TTH)' : 'Reveal'}</span><span class="num">${fmt(best.rev, dc)}${best.nom != null ? ` <span class="muted">row ${fmt(best.nom, 2)}</span>` : ''}</span></div>
+      ${tube && best.top != null && best.ng != null ? `<div class="row"><span>Pile stick-up</span><span class="num">${fmt(best.top - best.ng, dc)}</span></div>` : ''}
       <div class="row"><span>Angle change</span><span class="num">${fmt(best.ang, 3)}°</span></div>
       <div class="row"><span>Distance</span><span class="num">${best.s.toFixed(2)} m</span></div>`;
     tip.hidden = false;

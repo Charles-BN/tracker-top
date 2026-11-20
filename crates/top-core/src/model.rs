@@ -14,9 +14,52 @@ pub struct Pile {
     pub northing: f64,
     /// Ground elevation from the LIDAR survey (m).
     pub z_lidar: f64,
-    /// Lowest allowed top of pile (m, absolute), e.g. flood water level plus
-    /// clearance. `None` when the pile has no such requirement.
+    /// Lowest allowed height of the line (m, absolute; see `drop`), e.g. flood
+    /// water level plus clearance. `None` when the pile has no such requirement.
     pub min_top: Option<f64>,
+    /// How far the pile's top sits below the line the optimiser works on (m).
+    /// The line is the tops of pile themselves for trackers whose piles all
+    /// end at the tube (0 for every pile), or the torque tube for trackers
+    /// whose pile types sit at different depths below it (ATI OmniTrack:
+    /// 0.112 m for a bearing pile, 0.981 m for the centre structure).
+    pub drop: f64,
+    /// The pile carries the drive (motor pile): kept fixed by the set-out.
+    pub motor: bool,
+    /// Design height of the line above the ground at this pile (m), when the
+    /// layout gives one per row; `None` uses `Params::reveal_nominal`.
+    pub nominal: Option<f64>,
+}
+
+impl Pile {
+    /// A pile with no drop below the line, no design height of its own, and
+    /// a motor pile when its type says so (see [`crate::setout::is_motor_pile`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: impl Into<String>,
+        tracker: impl Into<String>,
+        block: impl Into<String>,
+        section: impl Into<String>,
+        pile_type: impl Into<String>,
+        easting: f64,
+        northing: f64,
+        z_lidar: f64,
+    ) -> Self {
+        let pile_type = pile_type.into();
+        Pile {
+            motor: crate::setout::is_motor_pile(&pile_type),
+            name: name.into(),
+            tracker: tracker.into(),
+            block: block.into(),
+            section: section.into(),
+            pile_type,
+            easting,
+            northing,
+            z_lidar,
+            min_top: None,
+            drop: 0.0,
+            nominal: None,
+        }
+    }
 }
 
 /// All piles of one tracker, ordered along the tracker (increasing Northing).
@@ -75,17 +118,7 @@ mod tests {
     use super::*;
 
     fn pile(name: &str, tracker: &str, n: f64, z: f64) -> Pile {
-        Pile {
-            name: name.into(),
-            tracker: tracker.into(),
-            block: "1".into(),
-            section: "1".into(),
-            pile_type: String::new(),
-            easting: 100.0,
-            northing: n,
-            z_lidar: z,
-            min_top: None,
-        }
+        Pile::new(name, tracker, "1", "1", "", 100.0, n, z)
     }
 
     #[test]

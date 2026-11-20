@@ -12,6 +12,9 @@
 --              Append-only. The current result of a tracker is its latest run.
 -- block_exports files sent to the installers, one row per block and revision.
 --              Append-only.
+-- pile_design  design data the master list gives per pile: the design height of
+--              the line above the ground (an ATI layout's row TTH), description,
+--              part number. Written with the piles and, like them, never changed.
 -- block_issues  "issued to installers" ticks and unticks, one row per change;
 --              a block's state is its latest row. Append-only.
 --
@@ -171,6 +174,9 @@ CREATE TABLE IF NOT EXISTS run_piles (
     set_e          REAL,
     set_n          REAL,
     shift          REAL,
+    -- Height of the line the optimiser worked on (the torque tube when pile
+    -- types sit at different depths below it; else NULL = top).
+    line           REAL,
     PRIMARY KEY (run_id, pile_id)
 );
 
@@ -203,6 +209,18 @@ CREATE TRIGGER IF NOT EXISTS block_exports_no_update BEFORE UPDATE ON block_expo
 BEGIN SELECT RAISE(ABORT, 'the installer export log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS block_exports_no_delete BEFORE DELETE ON block_exports
 BEGIN SELECT RAISE(ABORT, 'the installer export log is append-only'); END;
+
+CREATE TABLE IF NOT EXISTS pile_design (
+    pile_id     TEXT PRIMARY KEY REFERENCES piles (pile_id),
+    nominal     REAL,
+    description TEXT NOT NULL DEFAULT '',
+    part_number TEXT NOT NULL DEFAULT '',
+    import_id   INTEGER NOT NULL REFERENCES imports (import_id)
+);
+CREATE TRIGGER IF NOT EXISTS pile_design_no_update BEFORE UPDATE ON pile_design
+BEGIN SELECT RAISE(ABORT, 'the master pile list is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS pile_design_no_delete BEFORE DELETE ON pile_design
+BEGIN SELECT RAISE(ABORT, 'the master pile list is immutable'); END;
 
 CREATE TABLE IF NOT EXISTS block_issues (
     event_id INTEGER PRIMARY KEY,

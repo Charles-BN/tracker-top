@@ -466,6 +466,24 @@ impl Store {
                     params![p.0, p.1, p.2, p.3, p.4, p.5, p.6, p.7, p.8, new_id],
                 )
                 .map_err(err)?;
+                // Its design data (design height, description, part number), if any.
+                let design: Option<(Option<f64>, String, String)> = self
+                    .conn
+                    .query_row(
+                        "SELECT nominal, description, part_number FROM pile_design WHERE pile_id = ?1",
+                        [&p.0],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(err)?;
+                if let Some((nominal, desc, part)) = design {
+                    tx.execute(
+                        "INSERT INTO pile_design (pile_id, nominal, description, part_number, import_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![p.0, nominal, desc, part, new_id],
+                    )
+                    .map_err(err)?;
+                }
             }
             // Elevations and flood values of the import, under its new number.
             let mut st = self

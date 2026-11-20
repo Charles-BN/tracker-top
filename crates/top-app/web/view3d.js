@@ -222,7 +222,7 @@ export class View3D {
       case 'reveal': {
         if (p.rev[i] == null) return { key: 'none', rgb: hexRgb(OTHER) };
         const span = Math.max(Math.abs(s.delta_min), Math.abs(s.delta_max)) || 0.1;
-        return { key: 'v', rgb: divColor((p.rev[i] - s.reveal_nominal) / span, ctx.mid) };
+        return { key: 'v', rgb: divColor((p.rev[i] - (p.nom[i] ?? s.reveal_nominal)) / span, ctx.mid) };
       }
       case 'cutfill': {
         if (p.cf[i] == null) return { key: 'none', rgb: hexRgb(OTHER) };
@@ -400,7 +400,9 @@ export class View3D {
       for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) {
         if (!shownSet.has(i) || p.top[i] == null) { prev = -1; continue; }
         if (prev >= 0) {
-          lines.push(X(prev), Y(p.top[prev]), Z(prev), X(i), Y(p.top[i]), Z(i));
+          // The tube runs through the line (the tops, or the torque tube).
+          const ln = (k) => p.line[k] ?? p.top[k];
+          lines.push(X(prev), Y(ln(prev)), Z(prev), X(i), Y(ln(i)), Z(i));
           lineCol.push(...colors.get(prev), ...colors.get(i));
         }
         prev = i;
@@ -447,7 +449,11 @@ export class View3D {
         `<div style="margin-top:6px">${items([['over', STATUS.NonCompliant.color, `Above ${s.max_angle_deg}° limit`], ['none', OTHER, 'No result yet']])}</div>`;
     } else if (mode === 'reveal') {
       const span = Math.max(Math.abs(s.delta_min), Math.abs(s.delta_max));
-      html = ramp([DIV_NEG[2], DIV_NEG[0], ctx.mid, DIV_POS[0], DIV_POS[2]], fmt(s.reveal_nominal - span), fmt(s.reveal_nominal + span), `Reveal (m), nominal ${fmt(s.reveal_nominal)}`) +
+      const word = s.technology === 'tube' ? 'Tube height TTH' : 'Reveal';
+      const perRow = p.nom.some((v) => v != null);
+      html = (perRow
+        ? ramp([DIV_NEG[2], DIV_NEG[0], ctx.mid, DIV_POS[0], DIV_POS[2]], `−${fmt(span)}`, `+${fmt(span)}`, `${word} minus its row's design height (m)`)
+        : ramp([DIV_NEG[2], DIV_NEG[0], ctx.mid, DIV_POS[0], DIV_POS[2]], fmt(s.reveal_nominal - span), fmt(s.reveal_nominal + span), `${word} (m), nominal ${fmt(s.reveal_nominal)}`)) +
         `<div style="margin-top:6px">${items([['none', OTHER, 'No result yet']])}</div>`;
     } else if (mode === 'cutfill') {
       html = ramp([DIV_NEG[2], DIV_NEG[0], ctx.mid, DIV_POS[0], DIV_POS[2]], `cut ${fmt(-ctx.cfSpan)}`, `fill +${fmt(ctx.cfSpan)}`, 'Cut / fill (m)') +

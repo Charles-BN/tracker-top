@@ -15,6 +15,42 @@ pub enum FloodMode {
     Elevation,
 }
 
+/// Where the tracker's heights are given (the line the optimiser works on).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Technology {
+    /// Every pile ends at the tube: heights are the tops of pile and the
+    /// window is the reveal (Nextracker NX Horizon / XTR).
+    #[default]
+    Top,
+    /// Heights are the torque tube's; each pile type sits a fixed distance
+    /// below it (`PileRule::drop_m`) and the window is the tube height above
+    /// the ground, TTH (ATI OmniTrack).
+    Tube,
+}
+
+/// What a pile type is (matched on the master list's Pile Type, ignoring case).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PileRule {
+    pub pile_type: String,
+    /// How far the top of this pile sits below the torque tube (m); used
+    /// with `Technology::Tube` only.
+    pub drop_m: f64,
+    /// It carries the drive: the set-out keeps it fixed.
+    pub motor: bool,
+}
+
+impl Default for PileRule {
+    fn default() -> Self {
+        Self {
+            pile_type: String::new(),
+            drop_m: 0.0,
+            motor: false,
+        }
+    }
+}
+
 /// Weight of the pull towards the neighbouring rows when `align_rows` is on,
 /// relative to keeping the nominal reveal (see `top_core::align`).
 pub const ALIGN_WEIGHT: f64 = 10.0;
@@ -22,7 +58,14 @@ pub const ALIGN_WEIGHT: f64 = 10.0;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Nominal reveal above ground (m).
+    /// Where heights are given: tops of pile, or torque tube.
+    pub technology: Technology,
+    /// Pile types with their drop below the tube and their role. A type
+    /// without a rule is a motor pile when its name says so (`HMP`, "Motor").
+    pub pile_rules: Vec<PileRule>,
+    /// Nominal reveal above ground (m); with `Technology::Tube`, the nominal
+    /// torque-tube height (TTH). Rows with their own design height in the
+    /// master list (`pile_design.nominal`) use theirs.
     pub reveal_nominal: f64,
     /// Lowest reveal = nominal + this (m, negative).
     pub delta_min: f64,
@@ -96,6 +139,8 @@ impl Default for Settings {
     fn default() -> Self {
         let p = Params::default();
         Self {
+            technology: Technology::Top,
+            pile_rules: Vec::new(),
             reveal_nominal: p.reveal_nominal,
             delta_min: p.delta_min,
             delta_max: p.delta_max,
@@ -157,7 +202,7 @@ impl Settings {
     /// (Row alignment is not in it: it is marked on each result instead, so
     /// that blocks issued to the installers keep theirs; see `Store::optimize`.)
     pub fn params_json(&self) -> String {
-        serde_json::json!({
+        let mut v = serde_json::json!({
             "reveal_nominal": self.reveal_nominal,
             "delta_min": self.delta_min,
             "delta_max": self.delta_max,
@@ -172,8 +217,37 @@ impl Settings {
             "round_step": self.round_step,
             // Bumped when the calculation itself changes, so results are redone.
             "method": 3,
-        })
-        .to_string()
+        });
+        // Only when used, so that results made before these existed still stand.
+        if self.technology != Technology::Top || !self.pile_rules.is_empty() {
+            v["technology"] = serde_json::json!(self.technology);
+            v["pile_rules"] = serde_json::json!(self.pile_rules);
+        }
+        v.to_string()
+    }
+
+    /// The rule for a pile type, if any (ignoring case and spaces at the ends).
+    pub fn pile_rule(&self, pile_type: &str) -> Option<&PileRule> {
+        let t = pile_type.trim();
+        self.pile_rules
+            .iter()
+            .find(|r| r.pile_type.trim().eq_ignore_ascii_case(t))
+    }
+
+    /// How far a pile of this type sits below the line the optimiser works on (m).
+    pub fn pile_drop(&self, pile_type: &str) -> f64 {
+        match self.technology {
+            Technology::Top => 0.0,
+            Technology::Tube => self.pile_rule(pile_type).map_or(0.0, |r| r.drop_m),
+        }
+    }
+
+    /// Whether a pile of this type carries the drive.
+    pub fn is_motor(&self, pile_type: &str) -> bool {
+        match self.pile_rule(pile_type) {
+            Some(r) => r.motor,
+            None => top_core::setout::is_motor_pile(pile_type),
+        }
     }
 
     /// Flood water level at a pile (m, absolute), from its flood value and the
@@ -248,6 +322,17 @@ impl Settings {
                  (use / for a subfolder)"
                     .into(),
             );
+        }
+        for r in &self.pile_rules {
+            if r.pile_type.trim().is_empty() {
+                return Err("every pile type rule needs a pile type".into());
+            }
+            if !(r.drop_m.is_finite() && (0.0..=5.0).contains(&r.drop_m)) {
+                return Err(format!(
+                    "the drop below the tube of pile type \"{}\" must be between 0 and 5 m",
+                    r.pile_type
+                ));
+            }
         }
         if self.offset_warn_m > self.offset_reject_m {
             return Err("offset_warn_m must not exceed offset_reject_m".into());
