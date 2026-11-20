@@ -558,7 +558,7 @@ mod tests {
                 .unwrap()
                 .split(',')
                 .count(),
-            33
+            export::COLUMNS.len()
         );
     }
 

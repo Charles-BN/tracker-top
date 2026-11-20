@@ -75,17 +75,16 @@ pub fn read_piles<R: BufRead>(reader: R) -> Result<Vec<Pile>> {
                 value: get(c).to_string(),
             })
         };
-        piles.push(Pile {
-            name: get(c_name).to_string(),
-            tracker: get(c_tracker).to_string(),
-            block: c_block.map(|c| normalize_block(get(c))).unwrap_or_default(),
-            section: c_section.map(|c| get(c).to_string()).unwrap_or_default(),
-            pile_type: c_type.map(|c| get(c).to_string()).unwrap_or_default(),
-            easting: num(c_e, "Easting")?,
-            northing: num(c_n, "Northing")?,
-            z_lidar: num(c_z, "Z LIDAR")?,
-            min_top: None,
-        });
+        piles.push(Pile::new(
+            get(c_name),
+            get(c_tracker),
+            c_block.map(|c| normalize_block(get(c))).unwrap_or_default(),
+            c_section.map(|c| get(c).to_string()).unwrap_or_default(),
+            c_type.map(|c| get(c).to_string()).unwrap_or_default(),
+            num(c_e, "Easting")?,
+            num(c_n, "Northing")?,
+            num(c_z, "Z LIDAR")?,
+        ));
     }
     Ok(piles)
 }

@@ -31,6 +31,11 @@ pub struct Params {
     /// Weight of the pull towards the neighbouring rows (see [`crate::align`]),
     /// relative to keeping the nominal reveal; 0 = off.
     pub align_weight: f64,
+    /// Steepest slope of any one span (deg, e.g. ATI's LTTS < 15°); 0 = no limit.
+    pub max_span_slope_deg: f64,
+    /// Steepest slope of the whole tracker, first pile to last (deg, e.g.
+    /// ATI's ATTS < 8.5°); 0 = no limit.
+    pub max_tracker_slope_deg: f64,
 }
 
 impl Default for Params {
@@ -48,6 +53,8 @@ impl Default for Params {
             fixed_spans: false,
             round_step: 0.0,
             align_weight: 0.0,
+            max_span_slope_deg: 0.0,
+            max_tracker_slope_deg: 0.0,
         }
     }
 }
@@ -73,6 +80,14 @@ impl Params {
         }
         if !(self.max_cut_fill >= 0.0) {
             return Err("max_cut_fill must be >= 0".into());
+        }
+        for (name, v) in [
+            ("max_span_slope_deg", self.max_span_slope_deg),
+            ("max_tracker_slope_deg", self.max_tracker_slope_deg),
+        ] {
+            if !(v.is_finite() && (0.0..60.0).contains(&v)) {
+                return Err(format!("{name} must be between 0 (no limit) and 60 degrees"));
+            }
         }
         if !(self.align_weight >= 0.0 && self.align_weight.is_finite()) {
             return Err("align_weight must be >= 0".into());

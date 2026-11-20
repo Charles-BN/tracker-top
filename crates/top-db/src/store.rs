@@ -47,6 +47,10 @@ fn sig_current(own: &str, stored: &str, align: bool, issued: bool) -> bool {
 
 const SCHEMA: &str = include_str!("schema.sql");
 const SCHEMA_VERSION: &str = "4";
+/// Marked on a database that uses heights on the torque tube (pile types at
+/// different depths, design heights per row): older programs, which would put
+/// every pile top on the tube, refuse it. Everything else is as in version 4.
+const SCHEMA_TUBE: &str = "5";
 
 fn db(e: rusqlite::Error) -> String {
     match e {
@@ -123,6 +127,10 @@ pub struct PileResultRow {
     pub new_ground: f64,
     pub cut_fill: f64,
     pub top: f64,
+    /// Height of the line the run worked on: the tube (`Technology::Tube`),
+    /// else the top itself.
+    pub line: f64,
+    /// `line - new_ground`: the reveal, or the torque-tube height (TTH).
     pub reveal: f64,
     pub angle_diff_deg: f64,
     pub outlier: bool,
@@ -168,6 +176,15 @@ pub struct PileState {
     /// Flood water level and lowest allowed top, with the current ground and settings.
     pub flood_level: Option<f64>,
     pub min_top: Option<f64>,
+    /// From the master list: design height of the line above the ground for
+    /// this pile's row (else the nominal one), description, part number.
+    pub nominal: Option<f64>,
+    pub description: String,
+    pub part_number: String,
+    /// Window of the line over the ground at this pile (lowest, highest): the
+    /// reveal (or tube-height) window around its design height, narrowed by
+    /// its part's own limits.
+    pub window: (f64, f64),
     pub result: Option<PileResultRow>,
     /// Top minus the line through the neighbouring rows' tops at this
     /// Northing (or, beside one row only, that row's profile at this row's
@@ -301,6 +318,10 @@ struct MasterPile {
     pile_type: String,
     color: String,
     tracker_type: String,
+    /// From `pile_design` (see the schema): design height of the line, description, part number.
+    nominal: Option<f64>,
+    description: String,
+    part_number: String,
 }
 
 /// Lookup of master piles by ID and by position.
@@ -488,7 +509,7 @@ impl Store {
             )
             .ok();
         match existing.as_deref() {
-            None | Some(SCHEMA_VERSION) | Some("2") | Some("3") => {}
+            None | Some(SCHEMA_VERSION) | Some(SCHEMA_TUBE) | Some("2") | Some("3") => {}
             Some("1") => {
                 return Err("this database was made by a preview version of tracker-top (schema 1) \
                      and cannot be opened: start a new database and import the master pile list again"
@@ -520,12 +541,25 @@ impl Store {
         }
         // 3 -> 4: the installer export log and the revision triggers, both
         // created by the schema above. Nothing else changes.
+        // The line the optimiser worked on (heights on the torque tube).
+        let has_line: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('run_piles') WHERE name = 'line'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(db)?
+            > 0;
+        if !has_line {
+            conn.execute_batch("ALTER TABLE run_piles ADD COLUMN line REAL;")
+                .map_err(db)?;
+        }
         let store = Self {
             conn,
             path,
             snapshot_revision: None,
         };
-        if existing.as_deref() != Some(SCHEMA_VERSION) {
+        if !matches!(existing.as_deref(), Some(SCHEMA_VERSION) | Some(SCHEMA_TUBE)) {
             store.set_meta("schema_version", SCHEMA_VERSION)?;
         }
         if store.meta("revision")?.is_none() {
@@ -590,7 +624,25 @@ impl Store {
             &serde_json::to_string(s).expect("settings serialise"),
         )?;
         // When, so that the newest settings win when two computers' changes meet.
-        self.set_meta("settings_at", &crate::sync::utc_now())
+        self.set_meta("settings_at", &crate::sync::utc_now())?;
+        self.mark_tube_schema()
+    }
+
+    /// Mark the database as needing a program that knows heights on the
+    /// torque tube, once it uses them (see `SCHEMA_TUBE`).
+    fn mark_tube_schema(&self) -> Result<()> {
+        let tube = self.settings()?.technology == crate::settings::Technology::Tube
+            || self
+                .conn
+                .query_row("SELECT COUNT(*) FROM pile_design WHERE nominal IS NOT NULL", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .map_err(db)?
+                > 0;
+        if tube && self.meta("schema_version")?.as_deref() != Some(SCHEMA_TUBE) {
+            self.set_meta("schema_version", SCHEMA_TUBE)?;
+        }
+        Ok(())
     }
 
     /// Folder scanned for new survey files (e.g. a Trimble Connect Sync folder).
@@ -624,8 +676,10 @@ impl Store {
         let mut st = self
             .conn
             .prepare(
-                "SELECT pile_id, tracker, block, section, easting, northing, pile_type, color, tracker_type
-                 FROM piles ORDER BY tracker, northing, pile_id",
+                "SELECT p.pile_id, p.tracker, p.block, p.section, p.easting, p.northing, p.pile_type, p.color, p.tracker_type,
+                        d.nominal, COALESCE(d.description, ''), COALESCE(d.part_number, '')
+                 FROM piles p LEFT JOIN pile_design d ON d.pile_id = p.pile_id
+                 ORDER BY p.tracker, p.northing, p.pile_id",
             )
             .map_err(db)?;
         st.query_map([], |r| {
@@ -639,6 +693,9 @@ impl Store {
                 pile_type: r.get(6)?,
                 color: r.get(7)?,
                 tracker_type: r.get(8)?,
+                nominal: r.get(9)?,
+                description: r.get(10)?,
+                part_number: r.get(11)?,
             })
         })
         .map_err(db)?
@@ -815,7 +872,17 @@ impl Store {
         let c_ttype = table.find(Col::TrackerType);
         let c_z = table.find(Col::Elevation);
         let c_flood = table.find(Col::Flood);
+        let c_tube = table.find(Col::TubeZ);
+        let c_ptop = table.find(Col::PileTopZ);
+        let c_height = table.find(Col::DesignHeight);
+        let c_desc = table.find(Col::Description);
+        let c_part = table.find(Col::PartNumber);
         for (col, idx) in [
+            (Col::TubeZ, c_tube),
+            (Col::PileTopZ, c_ptop),
+            (Col::DesignHeight, c_height),
+            (Col::Description, c_desc),
+            (Col::PartNumber, c_part),
             (Col::PileId, c_id),
             (Col::Tracker, c_tracker),
             (Col::Block, c_block),
@@ -873,6 +940,8 @@ impl Store {
         }
 
         let mut rows: Vec<(MasterPile, Option<f64>, Option<f64>)> = Vec::new();
+        // Tube and pile-top elevations of a design layout, to learn pile types from.
+        let mut depths: Vec<(String, String, f64)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for (i, row) in table.rows.iter().enumerate() {
             let ln = line_no(table, i);
@@ -919,6 +988,16 @@ impl Store {
             };
             let z = parse_num(table.cell(row, c_z));
             let flood = parse_num(table.cell(row, c_flood));
+            if let (Some(t), Some(p)) = (
+                parse_num(table.cell(row, c_tube)),
+                parse_num(table.cell(row, c_ptop)),
+            ) {
+                depths.push((
+                    tracker.clone(),
+                    table.cell(row, c_type).to_string(),
+                    t - p,
+                ));
+            }
             rows.push((
                 MasterPile {
                     pile_id: id,
@@ -930,6 +1009,10 @@ impl Store {
                     pile_type: table.cell(row, c_type).to_string(),
                     color: table.cell(row, c_color).to_string(),
                     tracker_type: table.cell(row, c_ttype).to_string(),
+                    nominal: parse_num(table.cell(row, c_height))
+                        .filter(|v| v.is_finite() && (0.1..=10.0).contains(v)),
+                    description: table.cell(row, c_desc).to_string(),
+                    part_number: table.cell(row, c_part).to_string(),
                 },
                 z,
                 flood,
@@ -1051,6 +1134,18 @@ impl Store {
                 ])
                 .map_err(db)?;
             }
+            let mut ins = tx
+                .prepare(
+                    "INSERT INTO pile_design (pile_id, nominal, description, part_number, import_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(db)?;
+            for (p, _, _) in &new_rows {
+                if p.nominal.is_some() || !p.description.is_empty() || !p.part_number.is_empty() {
+                    ins.execute(params![p.pile_id, p.nominal, p.description, p.part_number, master_id])
+                        .map_err(db)?;
+                }
+            }
         }
         if with_z > 0 {
             let mut lidar_rep = ImportReport::new("lidar", &rep.file_name);
@@ -1112,7 +1207,127 @@ impl Store {
         }
         tx.commit().map_err(db)?;
         rep.import_id = Some(master_id);
+        self.learn_heights(&mut rep, &depths, &new_rows.iter().map(|r| &r.0).collect::<Vec<_>>())?;
+        self.mark_tube_schema()?;
         Ok(rep)
+    }
+
+    /// A design layout with both tube and pile-top elevations (ATI: `Z TT`,
+    /// `Z Pile`) tells how far each pile type sits below the tube, and which
+    /// type carries the drive (the one found exactly once in nearly every
+    /// tracker). A project still on the default settings is switched to
+    /// heights on the torque tube with those pile types, and its nominal
+    /// height becomes the layout's most common design height.
+    fn learn_heights(
+        &mut self,
+        rep: &mut ImportReport,
+        depths: &[(String, String, f64)],
+        piles: &[&MasterPile],
+    ) -> Result<()> {
+        if depths.is_empty() {
+            return Ok(());
+        }
+        let mut by_type: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        let mut per_tracker: HashMap<(&str, &str), usize> = HashMap::new();
+        let mut trackers: HashSet<&str> = HashSet::new();
+        for (tracker, ptype, d) in depths {
+            by_type.entry(ptype.clone()).or_default().push(*d);
+            *per_tracker.entry((tracker, ptype)).or_default() += 1;
+            trackers.insert(tracker);
+        }
+        let mut rules = Vec::new();
+        for (ptype, mut v) in by_type {
+            v.sort_by(f64::total_cmp);
+            let median = v[v.len() / 2];
+            let spread = v[v.len() - 1] - v[0];
+            let once = trackers
+                .iter()
+                .filter(|t| per_tracker.get(&(**t, ptype.as_str())) == Some(&1))
+                .count();
+            // The drive: one per tracker, in (nearly) every tracker, among other types.
+            let motor = !trackers.is_empty()
+                && once as f64 >= 0.9 * trackers.len() as f64
+                && v.len() < depths.len();
+            if spread > 0.01 {
+                rep.add(
+                    Level::Warning,
+                    &format!(
+                        "Pile type \"{ptype}\": the drop from the tube to the pile top varies by {:.3} m in the file; {:.3} m (the median) is used.",
+                        spread, median
+                    ),
+                    "",
+                );
+            }
+            rules.push(crate::settings::PileRule {
+                pile_type: ptype,
+                drop_m: (median * 1000.0).round() / 1000.0,
+                motor,
+            });
+        }
+        let described: Vec<String> = rules
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {:.3} m{}",
+                    if r.pile_type.is_empty() { "(no type)" } else { &r.pile_type },
+                    r.drop_m,
+                    if r.motor { " (motor / drive)" } else { "" }
+                )
+            })
+            .collect();
+        let mut heights: BTreeMap<i64, usize> = BTreeMap::new();
+        for p in piles {
+            if let Some(v) = p.nominal {
+                *heights.entry((v * 1000.0).round() as i64).or_default() += 1;
+            }
+        }
+        // The most common design height (the lower one on a tie).
+        let common = heights
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+            .map(|(v, _)| *v as f64 / 1000.0);
+        let mut s = self.settings()?;
+        let untouched = s.technology == crate::settings::Technology::Top && s.pile_rules.is_empty();
+        if untouched {
+            s.technology = crate::settings::Technology::Tube;
+            s.pile_rules = rules;
+            if let Some(h) = common {
+                s.reveal_nominal = h;
+            }
+            self.set_settings(&s)?;
+            rep.add(
+                Level::Info,
+                &format!(
+                    "The file gives tube and pile-top elevations: heights are now on the torque tube (Settings > Design limits > Tracker technology). Pile tops below the tube: {}.",
+                    described.join(", ")
+                ),
+                "",
+            );
+        } else {
+            rep.add(
+                Level::Info,
+                &format!(
+                    "Pile tops below the tube in this file: {} (Settings > Design limits > Tracker technology keeps its own values).",
+                    described.join(", ")
+                ),
+                "",
+            );
+        }
+        if heights.len() > 1 || (untouched && common.is_some()) {
+            let list: Vec<String> = heights
+                .iter()
+                .map(|(v, n)| format!("{:.2} m: {n} piles", *v as f64 / 1000.0))
+                .collect();
+            rep.add(
+                Level::Info,
+                &format!(
+                    "Design heights per row from the file, used instead of the nominal one: {}.",
+                    list.join(", ")
+                ),
+                "",
+            );
+        }
+        Ok(())
     }
 
     fn import_elevations(
@@ -1804,7 +2019,7 @@ impl Store {
             .conn
             .prepare(
                 "SELECT pile_id, run_id, z_ground, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier,
-                        min_top, min_top_active, set_e, set_n, shift
+                        min_top, min_top_active, set_e, set_n, shift, line
                  FROM run_piles WHERE run_id = ?1",
             )
             .map_err(db)?;
@@ -1820,6 +2035,7 @@ impl Store {
                             new_ground: r.get(3)?,
                             cut_fill: r.get(4)?,
                             top: r.get(5)?,
+                            line: r.get::<_, Option<f64>>(14)?.unwrap_or(r.get(5)?),
                             reveal: r.get(6)?,
                             angle_diff_deg: r.get(7)?,
                             outlier: r.get::<_, i64>(8)? != 0,
@@ -1872,6 +2088,10 @@ impl Store {
             h.update(p.northing.to_bits().to_le_bytes());
             h.update(e.z.to_bits().to_le_bytes());
             h.update(e.import_id.to_le_bytes());
+            if let Some(v) = p.nominal {
+                h.update([3]);
+                h.update(v.to_bits().to_le_bytes());
+            }
             match floods.get(&p.pile_id) {
                 Some((v, id)) => {
                     h.update([1]);
@@ -1905,7 +2125,7 @@ impl Store {
             .map(|r| {
                 masters[r.clone()]
                     .iter()
-                    .map(|p| results.get(&p.pile_id).map(|x| x.top))
+                    .map(|p| results.get(&p.pile_id).map(|x| x.line))
                     .collect()
             })
             .collect();
@@ -1997,15 +2217,22 @@ impl Store {
                     .iter()
                     .zip(&ev)
                     .map(|(p, e)| Pile {
-                        name: p.pile_id.clone(),
-                        tracker: p.tracker.clone(),
-                        block: p.block.clone(),
-                        section: p.section.clone(),
-                        pile_type: p.pile_type.clone(),
-                        easting: p.easting,
-                        northing: p.northing,
-                        z_lidar: e.z,
+                        min_height: settings.pile_heights(&p.description, &p.pile_type).0,
+                        max_height: settings.pile_heights(&p.description, &p.pile_type).1,
+                        drop: settings.pile_drop(&p.pile_type),
+                        motor: settings.is_motor(&p.pile_type),
+                        nominal: p.nominal,
                         min_top: settings.min_top(e.z, floods.get(&p.pile_id).map(|f| f.0)),
+                        ..Pile::new(
+                            p.pile_id.clone(),
+                            p.tracker.clone(),
+                            p.block.clone(),
+                            p.section.clone(),
+                            p.pile_type.clone(),
+                            p.easting,
+                            p.northing,
+                            e.z,
+                        )
                     })
                     .collect(),
             };
@@ -2048,7 +2275,7 @@ impl Store {
                             r.tracker
                                 .piles
                                 .iter()
-                                .map(|p| stored.get(&p.name).map(|x| x.top))
+                                .map(|p| stored.get(&p.name).map(|x| x.line))
                                 .collect::<Option<Vec<f64>>>()
                         })
                         .flatten()
@@ -2147,8 +2374,8 @@ impl Store {
             let mut ins_p = tx
                 .prepare(
                     "INSERT INTO run_piles (run_id, pile_id, z_ground, z_import_id, new_ground, cut_fill, top, reveal, angle_diff_deg, outlier,
-                                            min_top, min_top_active, set_e, set_n, shift)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                                            min_top, min_top_active, set_e, set_n, shift, line)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 )
                 .map_err(db)?;
             for (i, res, aligned) in &out {
@@ -2194,7 +2421,8 @@ impl Store {
                             r.min_top_active as i64,
                             r.easting,
                             r.northing,
-                            r.shift
+                            r.shift,
+                            (p.drop != 0.0).then_some(r.line)
                         ])
                         .map_err(db)?;
                 }
@@ -2353,6 +2581,10 @@ impl Store {
                     flood_import_id: flood.map(|f| f.1),
                     flood_level: e.and_then(|e| settings.flood_water_level(e.z, flood_value)),
                     min_top: e.and_then(|e| settings.min_top(e.z, flood_value)),
+                    nominal: p.nominal,
+                    window: settings.pile_window(p.nominal, &p.description, &p.pile_type),
+                    description: p.description.clone(),
+                    part_number: p.part_number.clone(),
                     result: results.remove(&p.pile_id),
                     row_dev: row_dev.get(&p.pile_id).copied(),
                 });
@@ -3558,5 +3790,110 @@ mod align_tests {
         // The latest change (b's untick) decides.
         assert!(a.issued_blocks().unwrap().is_empty());
         assert!(a.set_block_issued("no such block", true, "A").is_err());
+    }
+}
+
+#[cfg(test)]
+mod tube_tests {
+    use super::*;
+
+    /// An ATI-style layout: semicolons, decimal commas, heights on the tube,
+    /// a centre structure (CS) 0.981 m below it, bearing piles (BG) 0.112 m.
+    fn ati_master() -> String {
+        let mut s = String::from(";;Pile Name;Block;Easting;Northing;Z LIDAR;Z Pile;Row TTH;TTH & Exposure;Pile Section;Pile Type;Z TT;Description;Color;Part Number,,,,\n");
+        for (r, tth) in [(1, 1.47), (2, 1.67)] {
+            for k in 1..=7 {
+                let z = 100.0 + 0.03 * k as f64;
+                let typ = if k == 3 { "CS" } else { "BG" };
+                let drop = if typ == "CS" { 0.981 } else { 0.112 };
+                let tt = z + tth;
+                let num = |v: f64| format!("{v:.4}").replace('.', ",");
+                s.push_str(&format!(
+                    ";{k};PCS1.1-S01-R0{r}-P{k:02};1;{};{};{};{};{};{tth} INTERIOR;W6X8.5;{typ};{};{tth} INTERIOR W6X8.5 {typ};Orange;3301-{typ}\n",
+                    400000.0 + 5.4 * r as f64,
+                    5000000.0 + 8.9 * k as f64,
+                    num(z),
+                    num(tt - drop),
+                    num(tth),
+                    num(tt),
+                ));
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn an_ati_layout_puts_heights_on_the_tube() {
+        let mut s = Store::open_in_memory().unwrap();
+        let rep = s
+            .import_file(Kind::Master, "gesf.csv", ati_master().as_bytes(), None, "t")
+            .unwrap();
+        assert!(rep.accepted, "{:?}", rep.findings);
+        let st = s.settings().unwrap();
+        assert_eq!(st.technology, crate::settings::Technology::Tube);
+        assert_eq!(st.reveal_nominal, 1.47);
+        let rule = |t: &str| st.pile_rule(t).cloned().unwrap();
+        assert_eq!((rule("CS").drop_m, rule("CS").motor), (0.981, true));
+        assert_eq!((rule("bg").drop_m, rule("bg").motor), (0.112, false));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_TUBE));
+
+        s.optimize(false, "t", 1).unwrap();
+        let state = s.state().unwrap();
+        assert!(state.trackers.iter().all(|t| t.anchor_motor == Some(true)));
+        for p in &state.piles {
+            let r = p.result.as_ref().unwrap();
+            let drop = if p.pile_type == "CS" { 0.981 } else { 0.112 };
+            assert!((r.line - r.top - drop).abs() < 1e-9, "{}: line {} top {}", p.pile_id, r.line, r.top);
+            let tth = p.nominal.unwrap();
+            assert!((r.reveal - tth).abs() < 0.011, "{}: TTH {} for {}", p.pile_id, r.reveal, tth);
+            assert!((r.top * 100.0 - (r.top * 100.0).round()).abs() < 1e-6, "pile top on the centimetre");
+            assert_eq!(p.part_number, format!("3301-{}", p.pile_type));
+        }
+        let csv = crate::export::piles_csv(&state, &s.settings().unwrap());
+        assert!(csv.lines().next().unwrap().contains("Tube Height TTH (m)"));
+    }
+
+    #[test]
+    fn pile_part_limits_and_slopes_are_kept() {
+        let mut s = Store::open_in_memory().unwrap();
+        s.import_file(Kind::Master, "gesf.csv", ati_master().as_bytes(), None, "t").unwrap();
+        let mut st = s.settings().unwrap();
+        st.delta_min = -0.5;
+        st.delta_max = 0.5;
+        st.max_angle_deg = 1.0;
+        st.max_span_slope_deg = 15.0;
+        st.max_tracker_slope_deg = 8.5;
+        // By part (Description) for the bearing piles of the 1.47 m rows, by type for the rest.
+        st.pile_limits = vec![
+            crate::settings::PileLimit { key: "1.47 interior w6x8.5 bg".into(), min_reveal_m: Some(1.112), max_reveal_m: Some(1.30) },
+            crate::settings::PileLimit { key: "BG".into(), min_reveal_m: Some(1.112), max_reveal_m: Some(1.559) },
+            crate::settings::PileLimit { key: "CS".into(), min_reveal_m: Some(0.251), max_reveal_m: Some(0.495) },
+        ];
+        s.set_settings(&st).unwrap();
+        s.optimize(false, "t", 1).unwrap();
+        let state = s.state().unwrap();
+        for p in &state.piles {
+            let r = p.result.as_ref().unwrap();
+            let reveal = r.top - r.new_ground;
+            let (lo, hi) = match (p.pile_type.as_str(), p.description.starts_with("1.47")) {
+                ("CS", _) => (0.251, 0.495),
+                (_, true) => (1.112, 1.30),
+                _ => (1.112, 1.559),
+            };
+            assert!(reveal >= lo - 1e-4 && reveal <= hi + 1e-4, "{} {}: reveal {reveal}", p.pile_id, p.description);
+            let drop = if p.pile_type == "CS" { 0.981 } else { 0.112 };
+            assert!((p.window.1 - (hi + drop)).abs() < 1e-9, "{}: window {:?}", p.pile_id, p.window);
+        }
+    }
+
+    #[test]
+    fn older_programs_are_kept_away_from_a_tube_database() {
+        // A database with heights on the tube says schema 5; one without stays 4.
+        let mut s = Store::open_in_memory().unwrap();
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
+        s.import_file(Kind::Master, "gesf.csv", ati_master().as_bytes(), None, "t").unwrap();
+        let bytes = s.to_bytes().unwrap();
+        let again = Store::from_bytes(&bytes).unwrap();
+        assert_eq!(again.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_TUBE));
     }
 }

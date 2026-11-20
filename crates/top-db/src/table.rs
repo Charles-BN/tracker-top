@@ -35,6 +35,14 @@ pub enum Col {
     Code,
     TrackerType,
     Flood,
+    /// Torque-tube elevation of a design layout (ATI: `Z TT`).
+    TubeZ,
+    /// Top-of-pile elevation of a design layout (ATI: `Z Pile`).
+    PileTopZ,
+    /// Design height of the line above the ground (ATI: `Row TTH`).
+    DesignHeight,
+    Description,
+    PartNumber,
 }
 
 impl Col {
@@ -53,6 +61,11 @@ impl Col {
             Col::Code => "Code",
             Col::TrackerType => "Tracker Type",
             Col::Flood => "Flood",
+            Col::TubeZ => "Tube Z",
+            Col::PileTopZ => "Pile Top Z",
+            Col::DesignHeight => "Design Height",
+            Col::Description => "Description",
+            Col::PartNumber => "Part Number",
         }
     }
 
@@ -172,6 +185,22 @@ impl Col {
                 "wse",
             ],
             Col::Color => &["color", "colour", "colorcode", "colourcode", "couleur"],
+            Col::TubeZ => &["ztt", "ztube", "ztorquetube", "torquetubez", "tubez", "tubeelevation", "ttz"],
+            Col::PileTopZ => &["zpile", "zpiletop", "piletopz", "ztop", "ztopofpile", "topofpilez", "ztop0fpile"],
+            Col::DesignHeight => &[
+                "rowtth",
+                "tth",
+                "designtth",
+                "torquetubeheight",
+                "tubeheight",
+                "nominalheight",
+                "designheight",
+                "nominalreveal",
+                "designreveal",
+                "adaptedreveal",
+            ],
+            Col::Description => &["description", "desc", "designation", "piledescription"],
+            Col::PartNumber => &["partnumber", "partno", "partnum", "part", "itemnumber", "articlenumber", "sku"],
             Col::Date => &[
                 "surveydate",
                 "date",

@@ -474,6 +474,25 @@ pub struct Tracker {
 }
 ```
 
+A pile also has `drop` (how far its top sits below the line the optimiser works on: 0 when every
+pile ends at the tube; with heights on the torque tube, its type's drop, e.g. ATI's centre
+structure 0.981 m), `motor` (it carries the drive: kept fixed by the set-out) and `nominal` (its
+row's own design height, when the master list gives one). `Pile::new` sets them to 0, "from the
+type's name" and none.
+
+**The line.** The optimiser always works on one line per tracker: the tops of pile, or the
+torque tube. A row with its own design height is the usual problem over a ground raised by the
+difference. The window, angle limit, flood minimum, set-out and alignment apply to the line;
+`PileResult::line` is it and `PileResult::top = line - drop`. Rounding picks lines whose *pile
+top* falls on the centimetre (`round_profile`'s candidates are offset by the drop).
+
+`min_height` / `max_height` are a pile's own limits on the line's height above the ground (its
+part's lowest / highest reveal plus its drop). In `optimize_at` a `Window` gives each pile the
+bounds of `y - c`: the window around its design height, narrowed by those; the QP, the rounding
+(`cut_fill_for`, `round_profile`) and the final check all use it. `Params::max_span_slope_deg`
+and `max_tracker_slope_deg` add linear rows `|y_{i+1} - y_i| <= tan * h_i` and `|y_last - y_first|
+<= tan * L` (the rounding checks span slopes too; `slopes_ok` checks the result).
+
 `group_trackers(piles)` puts each pile in its tracker (a `BTreeMap` from tracker id to piles)
 and sorts each tracker's piles by Northing. `Tracker::chainage()` gives the distance of each pile
 from the first one, adding up the straight-line distance between consecutive piles.

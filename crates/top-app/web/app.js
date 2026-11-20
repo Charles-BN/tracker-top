@@ -124,6 +124,19 @@ function toast(msg, err = false) {
 }
 
 const cache = { summary: null, state: null };
+
+/** Heights on the torque tube (ATI OmniTrack) rather than the tops of pile. */
+const isTube = () => cache.summary?.settings?.technology === 'tube';
+/** Words for the height kept in the window: reveal, or torque-tube height. */
+const H = () => (isTube()
+  ? { short: 'TTH', name: 'Tube height (TTH)', lower: 'tube height', what: 'Torque-tube height above the ground' }
+  : { short: 'Reveal', name: 'Reveal', lower: 'reveal', what: 'Pile height above the ground' });
+/** Whether a pile type carries the drive: the project's pile types, else its name. */
+function isMotor(type) {
+  const t = String(type || '').trim().toLowerCase();
+  const r = (cache.summary?.settings?.pile_rules || []).find((x) => x.pile_type.trim().toLowerCase() === t);
+  return r ? r.motor : isMotorPile(type);
+}
 async function loadSummary(force = false) {
   if (!cache.summary || force) cache.summary = await api('GET', 'api/summary');
   return cache.summary;
@@ -266,8 +279,8 @@ renderers.overview = async () => {
           ${s.piles_no_elevation ? metric('No elevation', int(s.piles_no_elevation), 'trackers wait for these') : ''}
         </div>
       </div>
-      <div class="card group" title="Top of pile above the ground elevation in use, over every pile with a result">
-        <h3>Reveal</h3>
+      <div class="card group" title="${isTube() ? 'Torque tube' : 'Top of pile'} above the ground elevation in use, over every pile with a result">
+        <h3>${H().name}</h3>
         <div class="big-figure">${s.reveal_mean == null ? '–' : fmt(s.reveal_mean, 3)}<span> m average</span></div>
         <div class="metrics">
           ${s.reveal_mean == null ? '<p class="muted">No results yet.</p>' : `${metric('Range', `${fmt(s.reveal_min, 2)} – ${fmt(s.reveal_max, 2)} m`, `${int(s.piles_with_result)} piles`)}
@@ -339,7 +352,7 @@ const BLOCK_COLS = [
   { key: 'Graded', label: 'Graded', cls: 'num', cell: (b) => int(b.counts.Graded || 0) },
   { key: 'NonCompliant', label: 'Non-compliant', cls: 'num', cell: (b) => (b.counts.NonCompliant ? `<span class="bad-num">${int(b.counts.NonCompliant)}</span>` : '0') },
   { key: 'AwaitingSurvey', label: 'Awaiting', cls: 'num', hidden: true, cell: (b) => int(b.counts.AwaitingSurvey || 0) },
-  { key: 'reveal', label: 'Avg reveal (m)', cls: 'num', tip: "Mean reveal of the block's piles with a result", cell: (b) => (b.reveal_mean == null ? '–' : fmt(b.reveal_mean, 3)) },
+  { key: 'reveal', get label() { return `Avg ${H().lower} (m)`; }, cls: 'num', get tip() { return `Mean ${H().lower} of the block's piles with a result`; }, cell: (b) => (b.reveal_mean == null ? '–' : fmt(b.reveal_mean, 3)) },
   { key: 'installers', label: "Installers' file", tip: 'Excel file for the installers, written to the shared folder once the block is complete', cell: (b, inst) => installerCell(inst) },
   { key: 'issued', label: 'Issued', tip: 'Tick once the block is issued to the installers: its tops then stay as they are when neighbouring rows are aligned', cell: (b, inst) => (inst ? `<label class="issue-tick" title="${inst.issued ? `Issued ${esc(inst.issued.at.slice(0, 10))} by ${esc(inst.issued.by)}` : 'Not issued'}"><input type="checkbox" data-issue="${esc(b.block)}"${inst.issued ? ' checked' : ''} aria-label="Block ${esc(b.block)} issued to the installers">${inst.issued ? `<span class="muted">${esc(inst.issued.at.slice(0, 10))}</span>` : ''}</label>` : '') },
 ];
@@ -623,7 +636,7 @@ function trackerRowsFor(state, t) {
   let s = 0;
   for (let i = t.first_pile; i < t.first_pile + t.n_piles; i++) {
     if (i > t.first_pile) s += Math.hypot(p.e[i] - p.e[i - 1], p.n[i] - p.n[i - 1]);
-    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i], type: p.type[i], e: p.e[i], n: p.n[i] });
+    rows.push({ i, id: p.id[i], s, z: p.z[i], zs: p.zs[i], zl: p.zl[i], ng: p.ng[i], top: p.top[i], line: p.line[i], nom: p.nom[i], wlo: p.wlo[i], whi: p.whi[i], motor: isMotor(p.type[i]), rev: p.rev[i], ang: p.ang[i], cf: p.cf[i], zsrc: p.zsrc[i], flvl: p.flvl[i], mintop: p.mintop[i], mta: p.mta[i], type: p.type[i], e: p.e[i], n: p.n[i] });
   }
   return rows;
 }
@@ -667,6 +680,13 @@ function openProfileFull(t) {
   draw();
 }
 
+/** Design heights of the rows from the master list, if it gives them. */
+function rowHeights() {
+  const nom = cache.state?.piles?.nom;
+  if (!nom) return [];
+  return [...new Set(nom.filter((v) => v != null).map((v) => Math.round(v * 100) / 100))].sort((a, b) => a - b);
+}
+
 /** The design limits from the settings, at the top of the Results tab. */
 function renderLimits() {
   const s = cache.summary?.settings;
@@ -674,8 +694,10 @@ function renderLimits() {
   const lo = s.reveal_nominal + s.delta_min, hi = s.reveal_nominal + s.delta_max;
   const item = (label, value, tip) => `<div class="limit" title="${esc(tip)}"><span>${label}</span><b>${value}</b></div>`;
   $('#results-limits').innerHTML = [
-    item('Reveal', `${fmt(lo, 2)} – ${fmt(hi, 2)} m <small>nominal ${fmt(s.reveal_nominal, 2)}</small>`, 'Pile height above the ground: lowest, highest and target (Settings > Design limits)'),
+    item(H().name, `${fmt(lo, 2)} – ${fmt(hi, 2)} m <small>nominal ${fmt(s.reveal_nominal, 2)}${rowHeights().length > 1 ? ` · rows ${rowHeights().map((v) => fmt(v, 2)).join(' / ')}` : ''}</small>`, `${H().what}: lowest, highest and target (Settings > Design limits)${rowHeights().length > 1 ? '. Rows with their own design height in the master list keep the same window around it.' : ''}`),
     item('Angle change', `≤ ${fmt(s.max_angle_deg, 2)}°`, 'Largest change of slope between two consecutive spans'),
+    s.max_span_slope_deg > 0 || s.max_tracker_slope_deg > 0 ? item('Tube slope limit', [s.max_span_slope_deg > 0 ? `span ≤ ${fmt(s.max_span_slope_deg, 1)}°` : '', s.max_tracker_slope_deg > 0 ? `tracker ≤ ${fmt(s.max_tracker_slope_deg, 1)}°` : ''].filter(Boolean).join(' · '), 'Steepest slope of one span, and of a whole tracker from its first pile to its last') : '',
+    (s.pile_limits || []).length ? item('Pile limits', `${s.pile_limits.length} part${s.pile_limits.length === 1 ? '' : 's'}`, 'Lowest / highest reveal of pile parts (Settings > Design limits > Tracker technology)') : '',
     item('Cut / fill', `≤ ${fmt(s.max_cut_fill, 2)} m`, 'Cap on earthworks at a pile'),
     item('Tube slope', `warn > ${fmt(s.slope_warn_pct, 1)} %`, 'Torque-tube slope: mean of the absolute slopes of the spans between the tops of pile'),
     item('Flood', `level + ${fmt(s.flood_freeboard_m + s.flood_pile_height_m - s.flood_module_clearance_m, 3)} m`, 'Lowest top of pile where there is a flood value (Settings > Design limits > Flood)'),
@@ -777,7 +799,9 @@ function pileCols(t) {
   const used = (i, k) => (p.zsrc[i] === k ? 'used' : 'muted');
   return [
     { key: 'pile', label: 'Pile', fixed: true, cell: (i) => esc(p.id[i]) },
-    { key: 'type', label: 'Type', cell: (i) => `<span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}${isMotorPile(p.type[i]) ? ' <span class="motor-tag" title="Motor pile">M</span>' : ''}</span>` },
+    { key: 'type', label: 'Type', cell: (i) => `<span class="type-cell">${swatch(p.color[i])}${esc(p.type[i])}${isMotor(p.type[i]) ? ' <span class="motor-tag" title="Motor pile">M</span>' : ''}</span>` },
+    { key: 'desc', label: 'Description', hidden: true, when: p.desc[t.first_pile] !== '', cell: (i) => esc(p.desc[i]) },
+    { key: 'part', label: 'Part number', hidden: true, when: p.part[t.first_pile] !== '', cell: (i) => esc(p.part[i]) },
     { key: 'en', label: 'Easting / Northing', group: 'Position', cls: 'num', hidden: true, cell: (i) => `${fmt(p.e[i], 3)} / ${fmt(p.n[i], 3)}` },
     { key: 'zs', label: 'Survey Z', group: 'Ground', cls: 'num', tip: 'Latest field survey (hover for its date). Bold: the ground in use.', td: (i) => used(i, 'survey'), cell: (i) => `${p.zs[i] == null ? '–' : `<span title="Survey of ${esc(p.zdate[i] ?? '')}">${fmt(p.zs[i])}</span>`}${p.offset[i] != null && p.offset[i] > settings.offset_warn_m ? ` <span class="stale" title="Surveyed position is ${fmt(p.offset[i], 2)} m from design">⚠</span>` : ''}` },
     { key: 'zdate', label: 'Survey date', group: 'Ground', hidden: true, cell: (i) => esc(p.zdate[i] ?? '') },
@@ -785,8 +809,11 @@ function pileCols(t) {
     { key: 'dz', label: 'Δ', group: 'Ground', cls: 'num', tip: 'Survey minus LIDAR (m)', cell: (i) => (p.zs[i] != null && p.zl[i] != null ? fmt(p.zs[i] - p.zl[i], d) : '') },
     { key: 'ng', label: 'New ground', group: 'Result', cls: 'num', hidden: true, tip: 'Ground after cut/fill', cell: (i) => fmt(p.ng[i], d) },
     { key: 'cf', label: 'Cut/fill', group: 'Result', cls: 'num', cell: (i) => fmt(p.cf[i], d) },
+    { key: 'tube', label: 'Tube', group: 'Result', cls: 'num', when: isTube(), tip: 'Torque-tube elevation (the line optimised)', cell: (i) => fmt(p.line[i], d + 1) },
     { key: 'top', label: 'ToP', group: 'Result', cls: 'num', fixed: true, cell: (i) => `<b>${fmt(p.top[i], d)}</b>` },
-    { key: 'rev', label: 'Reveal', group: 'Result', cls: 'num', cell: (i) => fmt(p.rev[i], d) },
+    { key: 'rev', label: H().short, group: 'Result', cls: 'num', tip: H().what, cell: (i) => fmt(p.rev[i], d) },
+    { key: 'nom', label: 'Row height', group: 'Result', cls: 'num', hidden: true, when: p.nom[t.first_pile] != null, tip: "The row's design height from the master list", cell: (i) => fmt(p.nom[i], 2) },
+    { key: 'stick', label: 'Stick-up', group: 'Result', cls: 'num', hidden: !isTube(), tip: 'Pile top above the ground after cut/fill', cell: (i) => (p.top[i] == null ? '' : fmt(p.top[i] - p.ng[i], d)) },
     { key: 'ang', label: 'Angle (°)', group: 'Result', cls: 'num', cell: (i) => {
       const over = p.ang[i] != null && Math.abs(p.ang[i]) > settings.max_angle_deg + 0.001;
       return `<span${over ? ' class="bad-num"' : ''}>${fmt(p.ang[i], 3)}</span>${p.outl[i] ? ' <span title="Elevation is an outlier within this tracker">*</span>' : ''}`;
@@ -838,7 +865,7 @@ function renderDetail(t) {
         ${kv('Result of', esc(t.run_at?.slice(0, 16) ?? '–'))}
       </div></div>
       ${t.anchor_pile ? `<div class="kv-group"><h4>Set-out</h4><div class="kv">
-        ${kv('Fixed pile', `${esc(t.anchor_pile.split('.').pop())}${t.anchor_motor ? ' · motor' : ' · middle'}`)}
+        ${kv('Fixed pile', `${esc(t.anchor_pile.split(/[.\-_ ]/).pop())}${t.anchor_motor ? ' · motor' : ' · middle'}`)}
         ${kv('Largest shift', `${fmt(t.max_shift ?? 0, dc())} m`)}
         ${kv('Span check', `${spanOk ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(1)} mm`, ' title="Largest difference between a span\'s length along the tube and its design length"')}
       </div></div>` : ''}
@@ -863,8 +890,17 @@ function renderDetail(t) {
 let view = null;
 let View3DClass = null;
 
+/** The colour list's reveal entry, worded for the project (reveal or tube height). */
+function nameHeightModes() {
+  for (const sel of ['#m2-mode', '#v3-color']) {
+    const o = document.querySelector(`${sel} option[value="reveal"]`);
+    if (o) o.textContent = H().name;
+  }
+}
+
 renderers.view3d = async () => {
   const [state, sum] = await Promise.all([loadState(), loadSummary()]);
+  nameHeightModes();
   if (!View3DClass) View3DClass = (await import('./view3d.js')).View3D;
   if (!view) {
     view = new View3DClass($('#v3-main'), $('#v3-legend'), showPileInfo);
@@ -909,8 +945,10 @@ function showPileInfo(i, panel = '#v3-info') {
     ${row('LIDAR Z', `${fmt(p.zl[i])}${inUse('lidar')}`)}
     ${diff != null ? row('Survey − LIDAR', `${fmt(diff, d)} m`) : ''}
     ${row('Cut / fill', fmt(p.cf[i], d))}
+    ${isTube() ? row('Torque tube', fmt(p.line[i], d + 1)) : ''}
     ${row('Top of pile', `<b>${fmt(p.top[i], d)}</b>`)}
-    ${row('Reveal', fmt(p.rev[i], d))}
+    ${row(H().name, `${fmt(p.rev[i], d)}${p.nom[i] != null ? ` <span class="muted">row ${fmt(p.nom[i], 2)}</span>` : ''}`)}
+    ${p.part[i] ? row('Part number', esc(p.part[i])) : ''}
     ${p.flood[i] != null ? row('Flood water level', `${fmt(p.flvl[i], d)} <span class="muted">value ${fmt(p.flood[i], 2)}</span>`) + row('Lowest allowed top', `${fmt(p.mintop[i], d)}${p.mta[i] ? ' <span class="muted">raised</span>' : ''}`) : ''}
     ${row('Angle change', `${fmt(p.ang[i], 3)}° <span class="muted">/ ${s.max_angle_deg}°</span>`)}
     ${p.rdev[i] != null ? row('Off neighbouring rows', `${(p.rdev[i] * 100).toFixed(0)} cm <span class="muted">${p.rdev[i] > 0 ? 'above' : p.rdev[i] < 0 ? 'below' : ''}</span>`) : ''}
@@ -944,6 +982,7 @@ let plots = null;
 
 renderers.map = async () => {
   const [state, sum] = await Promise.all([loadState(), loadSummary()]);
+  nameHeightModes();
   if (!map) {
     const { Map2D } = await import('./map2d.js');
     map = new Map2D($('#m2-main'), $('#m2-legend'), (i) => showPileInfo(i, '#m2-info'));
@@ -1196,7 +1235,9 @@ const OPT_FIELDS = [
   ['reveal_nominal', 'Nominal reveal', 'm', 'Target height of the top of pile above ground.'],
   ['delta_min', 'Lowest reveal, offset from nominal', 'm', 'Negative. Lowest reveal = nominal + this.'],
   ['delta_max', 'Highest reveal, offset from nominal', 'm', 'Highest reveal = nominal + this.'],
-  ['max_angle_deg', 'Max angle change between spans', '°', 'The NX Horizon XTR limit is 0.75°; 0.70° keeps a margin.'],
+  ['max_angle_deg', 'Max angle change between spans', '°', 'The NX Horizon XTR limit is 0.75°; 0.70° keeps a margin. Use the tracker maker\'s limit.'],
+  ['max_span_slope_deg', 'Max slope of one span', '°', '0 = no limit. ATI: local torque-tube slope (LTTS) < 15°.'],
+  ['max_tracker_slope_deg', 'Max slope of a whole tracker', '°', '0 = no limit. First pile to last. ATI: average torque-tube slope (ATTS) < 8.5°.'],
   ['max_cut_fill', 'Max cut/fill at a pile', 'm', 'Grading is never larger than this.'],
   ['grading_threshold', 'Grading counted above', 'm', 'A tracker needing more cut/fill than this is "Graded".'],
   ['slope_warn_pct', 'Warn when the torque-tube slope is above', '%', 'Mean of the absolute slopes of a tracker\'s spans, between its tops of pile.'],
@@ -1208,6 +1249,124 @@ const MATCH_FIELDS = [
   ['offset_reject_m', 'Reject if off design position by more than', 'm', 'Almost always a wrong point ID.'],
   ['jump_warn_m', 'Warn if the elevation changed by more than', 'm', 'Compared with the previous survey of the same pile.'],
 ];
+
+/** The window and angle fields, worded for where heights are given. */
+function optFields(technology) {
+  if (technology !== 'tube') return OPT_FIELDS;
+  const words = {
+    reveal_nominal: ['Nominal torque-tube height (TTH)', 'Tube above the ground. Rows with their own design height in the master list (Row TTH) use theirs.'],
+    delta_min: ['Lowest tube height, offset from nominal', 'Negative. Lowest TTH = design height + this.'],
+    delta_max: ['Highest tube height, offset from nominal', 'Highest TTH = design height + this.'],
+  };
+  return OPT_FIELDS.map(([k, label, unit, help]) => (words[k] ? [k, words[k][0], unit, words[k][1]] : [k, label, unit, help]));
+}
+
+/** Tracker technology and the pile types of the master list. */
+function renderTechnology(settings) {
+  const sel = $('[name="technology"]');
+  sel.value = settings.technology || 'top';
+  const counts = new Map();
+  for (const t of cache.state?.piles?.type ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+  for (const r of settings.pile_rules || []) if (!counts.has(r.pile_type)) counts.set(r.pile_type, 0);
+  const rule = (t) => (settings.pile_rules || []).find((r) => r.pile_type.trim().toLowerCase() === String(t).trim().toLowerCase());
+  const types = [...counts.keys()].sort((a, b) => (counts.get(b) - counts.get(a)) || String(a).localeCompare(b));
+  const draw = () => {
+    const tube = sel.value === 'tube';
+    $('#tech-help').textContent = tube
+      ? 'The window is the torque-tube height above the ground (TTH); each pile type sits its drop below the tube.'
+      : 'The window is the reveal: the top of pile above the ground. Every pile ends at the tube.';
+    $('#pile-rules').innerHTML = types.length
+      ? `<thead><tr><th>Pile type</th><th class="num">Piles</th>${tube ? '<th>Top below the tube (m)</th>' : ''}<th>Motor / drive</th></tr></thead><tbody>${types.map((t, k) => {
+        const r = rule(t);
+        return `<tr data-type="${esc(t)}"><td><b>${esc(t || '(none)')}</b></td><td class="num">${int(counts.get(t))}</td>${tube ? `<td><input type="number" step="0.001" min="0" max="5" data-drop value="${r ? r.drop_m : 0}" aria-label="Drop of ${esc(t)}"></td>` : `<td hidden><input type="number" data-drop value="${r ? r.drop_m : 0}"></td>`}<td><label class="check"><input type="checkbox" data-motor${(r ? r.motor : isMotorPile(t)) ? ' checked' : ''}> carries the drive</label></td></tr>`;
+      }).join('')}</tbody>`
+      : '<tbody><tr><td class="muted">Import the master pile list to see its pile types.</td></tr></tbody>';
+    drawLimits(settings.pile_limits || []);
+    $('#opt-title').innerHTML = tube ? 'Tracker &amp; tube height' : 'Tracker &amp; reveal';
+    const cur = Object.fromEntries(OPT_FIELDS.map(([k]) => [k, $(`[name="${k}"]`)?.value ?? settings[k]]));
+    $('#settings-opt').innerHTML = settingsInputs(optFields(sel.value), cur);
+  };
+  sel.onchange = () => { const keep = readPileLimits(); draw(); drawLimits(keep); floodRule(); };
+  $('#limits-file').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) {
+      try { await loadLimitsFile(f); } catch (err) { toast(err.message, true); }
+    }
+  };
+  draw();
+}
+
+/** Pile limits table: one row per part (Description) of the master list, else per pile type. */
+function drawLimits(limits) {
+  const p = cache.state?.piles;
+  const rows = new Map();
+  if (p) {
+    const byDesc = p.desc.some((d) => d);
+    for (let i = 0; i < p.id.length; i++) {
+      const key = byDesc && p.desc[i] ? p.desc[i] : p.type[i];
+      const r = rows.get(key) ?? { key, n: 0 };
+      r.n += 1;
+      rows.set(key, r);
+    }
+  }
+  for (const l of limits) {
+    if (![...rows.keys()].some((k) => k.trim().toLowerCase() === l.key.trim().toLowerCase())) rows.set(l.key, { key: l.key, n: 0 });
+  }
+  const lim = (k) => limits.find((l) => l.key.trim().toLowerCase() === String(k).trim().toLowerCase());
+  const list = [...rows.values()].sort((a, b) => natural(a.key, b.key));
+  const val = (v) => (v == null ? '' : v);
+  $('#pile-limits').innerHTML = list.length
+    ? `<thead><tr><th>Part / type</th><th class="num">Piles</th><th>Lowest reveal (m)</th><th>Highest reveal (m)</th></tr></thead><tbody>${list.map((r) => {
+      const l = lim(r.key);
+      return `<tr data-key="${esc(r.key)}"><td><b>${esc(r.key || '(none)')}</b></td><td class="num">${int(r.n)}</td><td><input type="number" step="0.001" min="0" max="10" data-min value="${val(l?.min_reveal_m)}" aria-label="Lowest reveal of ${esc(r.key)}"></td><td><input type="number" step="0.001" min="0" max="10" data-max value="${val(l?.max_reveal_m)}" aria-label="Highest reveal of ${esc(r.key)}"></td></tr>`;
+    }).join('')}</tbody>`
+    : '<tbody><tr><td class="muted">Import the master pile list to see its parts.</td></tr></tbody>';
+}
+
+/** Pile limits from the table: the rows with a value. */
+function readPileLimits() {
+  const num = (el) => (el.value.trim() === '' ? null : Number(el.value));
+  return [...document.querySelectorAll('#pile-limits tr[data-key]')].map((tr) => ({
+    key: tr.dataset.key,
+    min_reveal_m: num(tr.querySelector('[data-min]')),
+    max_reveal_m: num(tr.querySelector('[data-max]')),
+  })).filter((l) => l.min_reveal_m != null || l.max_reveal_m != null);
+}
+
+/** Pile limits from a CSV file: part (or pile type); lowest reveal; highest reveal. */
+async function loadLimitsFile(file) {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) throw new Error('The file is empty.');
+  const sep = (lines[0].match(/;/g) || []).length >= (lines[0].match(/,/g) || []).length ? ';' : ',';
+  const num = (s) => {
+    const t = String(s ?? '').trim().replace(',', '.');
+    const v = Number(t);
+    return t === '' || !Number.isFinite(v) ? null : v;
+  };
+  const out = [];
+  for (const line of lines) {
+    const f = line.split(sep).map((x) => x.trim().replace(/^"|"$/g, ''));
+    if (!f[0] || (num(f[1]) == null && num(f[2]) == null)) continue; // header or empty
+    out.push({ key: f[0], min_reveal_m: num(f[1]), max_reveal_m: num(f[2]) });
+  }
+  if (!out.length) throw new Error('No limits found: one line per part or pile type, then the lowest and highest reveal (m).');
+  const known = new Set([...document.querySelectorAll('#pile-limits tr[data-key]')].map((tr) => tr.dataset.key.trim().toLowerCase()));
+  const keep = readPileLimits().filter((l) => !out.some((o) => o.key.toLowerCase() === l.key.toLowerCase()));
+  drawLimits([...keep, ...out]);
+  const unknown = out.filter((o) => !known.has(o.key.trim().toLowerCase())).length;
+  toast(`${out.length} pile limits loaded${unknown ? ` (${unknown} for parts not in the master list)` : ''}. Save settings to use them.`);
+}
+
+/** Pile type rules from the table: only those that say more than the type's name. */
+function readPileRules() {
+  return $$('#pile-rules tr[data-type]').map((tr) => ({
+    pile_type: tr.dataset.type,
+    drop_m: Number(tr.querySelector('[data-drop]').value) || 0,
+    motor: tr.querySelector('[data-motor]').checked,
+  })).filter((r) => r.drop_m !== 0 || r.motor !== isMotorPile(r.pile_type) || (cache.summary?.settings?.pile_rules || []).some((x) => x.pile_type === r.pile_type));
+}
 
 function settingsInputs(fields, values) {
   return fields.map(([k, label, unit, help]) => `<label class="field"><span>${label} (${unit})</span>
@@ -1278,7 +1437,11 @@ renderers.settings = async () => {
   const profileSelect = $('[name="auto_export_profile"]');
   const names = [...new Set([...opts.profiles.map((p) => p.name), settings.auto_export_profile])];
   profileSelect.innerHTML = names.map((n) => `<option>${esc(n)}</option>`).join('');
-  $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, settings);
+  $('#settings-opt').innerHTML = settingsInputs(optFields(settings.technology), settings);
+  renderTechnology(settings);
+  // Pile type counts come with the pile list: fill them in once it is loaded,
+  // without holding up the rest of the form.
+  if (!cache.state) loadState().then(() => { if (current === 'settings') renderTechnology({ ...settings, technology: $('[name="technology"]').value, pile_rules: readPileRules(), pile_limits: readPileLimits() }); }).catch(() => {});
   $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, settings);
   const setFlood = (v) => {
     $('[name="flood_mode"]').value = v.flood_mode;
@@ -1300,7 +1463,8 @@ renderers.settings = async () => {
   renderDatabaseCard(sum);
   renderShareCard();
   $('#settings-defaults').onclick = () => {
-    $('#settings-opt').innerHTML = settingsInputs(OPT_FIELDS, defaults);
+    $('#settings-opt').innerHTML = settingsInputs(optFields(defaults.technology), defaults);
+    renderTechnology(defaults);
     $('#settings-match').innerHTML = settingsInputs(MATCH_FIELDS, defaults);
     setFlood(defaults);
     toast('Defaults restored in the form. Click Save settings to apply them.');
@@ -1320,6 +1484,9 @@ $('#settings-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const settings = {};
   for (const [k] of [...OPT_FIELDS, ...MATCH_FIELDS]) settings[k] = Number($(`[name="${k}"]`).value);
+  settings.technology = $('[name="technology"]').value;
+  settings.pile_rules = readPileRules();
+  settings.pile_limits = readPileLimits();
   settings.flood_mode = $('[name="flood_mode"]').value;
   for (const k of ['flood_pile_height_m', 'flood_module_clearance_m', 'flood_freeboard_m']) settings[k] = Number($(`[name="${k}"]`).value);
   const epsg = $('[name="epsg"]').value.trim();
@@ -1376,7 +1543,12 @@ function floodRule() {
   if (![h, c, f].every(Number.isFinite)) return;
   const clear = f + h - c, free = c - f;
   const level = $('[name="flood_mode"]').value === 'elevation';
-  $('#flood-rule').innerHTML = `Rule: <b>top of pile ≥ flood ${level ? 'level' : 'water level (ground + depth)'} + ${clear.toFixed(3)} m</b> (${f.toFixed(2)} m freeboard + ${(h - c).toFixed(3)} m from the top of pile to the lowest module edge). With a ${h.toFixed(3)} m pile, water up to ${free.toFixed(2)} m deep needs no raise; deeper, the pile is raised by depth − ${free.toFixed(2)} m (e.g. 0.45 m of water: +${Math.max(0, 0.45 - free).toFixed(2)} m, pile ${(h + Math.max(0, 0.45 - free)).toFixed(3)} m). The optimiser raises a pile only when its top would otherwise be lower.`;
+  // With heights on the torque tube the rule holds for the tube: the
+  // reference height is then the tube's above the ground.
+  const tube = $('[name="technology"]')?.value === 'tube';
+  const what = tube ? 'torque tube' : 'top of pile';
+  const ref = tube ? 'tube height' : 'pile';
+  $('#flood-rule').innerHTML = `Rule: <b>${what} ≥ flood ${level ? 'level' : 'water level (ground + depth)'} + ${clear.toFixed(3)} m</b> (${f.toFixed(2)} m freeboard + ${(h - c).toFixed(3)} m from the ${what} to the lowest module edge). With a ${h.toFixed(3)} m ${ref}, water up to ${free.toFixed(2)} m deep needs no raise; deeper, the ${tube ? 'tube' : 'pile'} is raised by depth − ${free.toFixed(2)} m (e.g. 0.45 m of water: +${Math.max(0, 0.45 - free).toFixed(2)} m, ${ref} ${(h + Math.max(0, 0.45 - free)).toFixed(3)} m). The optimiser raises ${tube ? 'the tube' : 'a pile'} only when it would otherwise be lower.${tube ? ' Set the reference height and module clearance for the tube.' : ''}`;
 }
 ['flood_mode', 'flood_pile_height_m', 'flood_module_clearance_m', 'flood_freeboard_m'].forEach((k) => $(`[name="${k}"]`).addEventListener('input', floodRule));
 

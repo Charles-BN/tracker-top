@@ -40,7 +40,7 @@ pub fn anchor_index(tracker: &Tracker) -> (usize, bool) {
         .piles
         .iter()
         .enumerate()
-        .filter(|(_, p)| is_motor_pile(&p.pile_type))
+        .filter(|(_, p)| p.motor)
         .map(|(i, _)| i)
         .collect();
     match motors.as_slice() {
@@ -50,7 +50,7 @@ pub fn anchor_index(tracker: &Tracker) -> (usize, bool) {
 }
 
 /// Positions keeping each span's design length (its plan length in the
-/// layout) between the given tops.
+/// layout) between the given heights of the line (the tube: see `Pile::drop`).
 pub fn set_out(tracker: &Tracker, tops: &[f64]) -> SetOut {
     let piles = &tracker.piles;
     let n = piles.len();
@@ -133,17 +133,7 @@ mod tests {
             piles: types
                 .iter()
                 .enumerate()
-                .map(|(i, t)| Pile {
-                    name: format!("P{i}"),
-                    tracker: "T".into(),
-                    block: String::new(),
-                    section: String::new(),
-                    pile_type: t.to_string(),
-                    easting: 1000.0,
-                    northing: 5000.0 + spacing * i as f64,
-                    z_lidar: 0.0,
-                    min_top: None,
-                })
+                .map(|(i, t)| Pile::new(format!("P{i}"), "T", "", "", *t, 1000.0, 5000.0 + spacing * i as f64, 0.0))
                 .collect(),
         }
     }

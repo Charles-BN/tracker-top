@@ -259,7 +259,7 @@ pub fn align_all(
         });
         let mut moved = BTreeSet::new();
         for ((i, _), res) in jobs.iter().zip(results) {
-            let new: Vec<f64> = res.piles.iter().map(|p| p.top).collect();
+            let new: Vec<f64> = res.piles.iter().map(|p| p.line).collect();
             let shift = tops[*i].as_ref().map_or(f64::INFINITY, |old| {
                 old.iter()
                     .zip(&new)
@@ -293,16 +293,17 @@ mod tests {
             .map(|r| Tracker {
                 id: format!("T{r:02}"),
                 piles: (0..piles)
-                    .map(|k| Pile {
-                        name: format!("P{r:02}.{k:02}"),
-                        tracker: format!("T{r:02}"),
-                        block: "1".into(),
-                        section: "1".into(),
-                        pile_type: String::new(),
-                        easting: 1000.0 + 5.4 * r as f64,
-                        northing: 5000.0 + 8.0 * k as f64,
-                        z_lidar: ground(r, k),
-                        min_top: None,
+                    .map(|k| {
+                        Pile::new(
+                            format!("P{r:02}.{k:02}"),
+                            format!("T{r:02}"),
+                            "1",
+                            "1",
+                            "",
+                            1000.0 + 5.4 * r as f64,
+                            5000.0 + 8.0 * k as f64,
+                            ground(r, k),
+                        )
                     })
                     .collect(),
             })
@@ -336,7 +337,7 @@ mod tests {
         let solver = crate::optimize::default_solver();
         let mut tops: Vec<Option<Vec<f64>>> = t
             .iter()
-            .map(|t| Some(optimize_tracker(t, &params, &solver).piles.iter().map(|p| p.top).collect()))
+            .map(|t| Some(optimize_tracker(t, &params, &solver).piles.iter().map(|p| p.line).collect()))
             .collect();
         let rows = Rows::new(&positions(&t));
         let kink = |tops: &[Option<Vec<f64>>]| {
@@ -367,7 +368,7 @@ mod tests {
         let solver = crate::optimize::default_solver();
         let mut tops: Vec<Option<Vec<f64>>> = t
             .iter()
-            .map(|t| Some(optimize_tracker(t, &params, &solver).piles.iter().map(|p| p.top).collect()))
+            .map(|t| Some(optimize_tracker(t, &params, &solver).piles.iter().map(|p| p.line).collect()))
             .collect();
         let before = tops.clone();
         let rows = Rows::new(&positions(&t));

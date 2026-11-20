@@ -142,6 +142,11 @@ export class Map2D {
     this.draw();
   }
 
+  /** Name of the colour mode (the reveal is the tube height when heights are on the tube). */
+  modeName() {
+    return this.mode === 'reveal' && this.summary?.settings?.technology === 'tube' ? 'Tube height (TTH)' : MODES[this.mode];
+  }
+
   setMode(mode) {
     this.mode = mode;
     this.hidden.clear();
@@ -243,7 +248,7 @@ export class Map2D {
       const reveal = this.mode === 'reveal';
       const val = new Float64Array(n).fill(NaN);
       for (let i = 0; i < n; i++) {
-        if (reveal) { if (p.rev[i] != null) val[i] = p.rev[i] - s.reveal_nominal; } else if (p.zs[i] != null && p.zl[i] != null) val[i] = p.zs[i] - p.zl[i];
+        if (reveal) { if (p.rev[i] != null) val[i] = p.rev[i] - (p.nom[i] ?? s.reveal_nominal); } else if (p.zs[i] != null && p.zl[i] != null) val[i] = p.zs[i] - p.zl[i];
       }
       let span;
       if (reveal) span = Math.max(Math.abs(s.delta_min), Math.abs(s.delta_max));
@@ -258,8 +263,11 @@ export class Map2D {
         cls[i] = Number.isNaN(val[i]) ? BUCKETS : Math.round(((Math.max(-span, Math.min(span, val[i])) / span + 1) / 2) * (BUCKETS - 1));
       }
       const f = (v) => v.toFixed(2);
+      const word = s.technology === 'tube' ? 'Tube height TTH' : 'Reveal';
       legend = reveal
-        ? { stops, lo: f(s.reveal_nominal - span), hi: f(s.reveal_nominal + span), title: `Reveal (m), nominal ${f(s.reveal_nominal)}` }
+        ? (p.nom.some((v) => v != null)
+          ? { stops, lo: `−${f(span)}`, hi: `+${f(span)}`, title: `${word} minus its row's design height (m)` }
+          : { stops, lo: f(s.reveal_nominal - span), hi: f(s.reveal_nominal + span), title: `${word} (m), nominal ${f(s.reveal_nominal)}` })
         : { stops, lo: `−${f(span)}`, hi: `+${f(span)}`, title: 'Survey − LIDAR (m): blue = survey lower, red = survey higher' };
     }
     const members = classes.map(() => []);
@@ -275,7 +283,7 @@ export class Map2D {
   renderLegend() {
     const n = this.data.n;
     const pct = (c) => (n ? Math.round((100 * c) / n) : 0);
-    let html = `<div class="title">${esc(MODES[this.mode])}</div>`;
+    let html = `<div class="title">${esc(this.modeName())}</div>`;
     if (this.rampLegend) {
       const r = this.rampLegend;
       html += `<div class="ramp" style="background:linear-gradient(90deg,${r.stops.join(',')})"></div><div class="ramp-labels"><span>${esc(r.lo)}</span><span>${esc(r.hi)}</span></div><div class="muted" style="margin:4px 0">${esc(r.title)}</div>`;
@@ -610,7 +618,7 @@ export class Map2D {
       coverage: p.zs[i] != null ? `surveyed ${p.zdate[i] ?? ''}` : c.label,
       date: p.zs[i] != null ? `surveyed ${p.zdate[i] ?? ''}` : 'not surveyed',
       status: STATUS[t.status]?.[1] ?? t.status,
-      reveal: p.rev[i] != null ? `reveal ${p.rev[i].toFixed(2)} m` : 'no result',
+      reveal: p.rev[i] != null ? `${this.summary.settings.technology === 'tube' ? 'tube height' : 'reveal'} ${p.rev[i].toFixed(2)} m${p.nom[i] != null ? ` (row ${p.nom[i].toFixed(2)})` : ''}` : 'no result',
       diff: p.zs[i] != null && p.zl[i] != null ? `survey − LIDAR ${(p.zs[i] - p.zl[i]).toFixed(2)} m` : 'not surveyed',
       installers: c.label,
       colors: `${p.type[i] || '–'} · ${p.color[i] || 'no colour'}`,
@@ -641,7 +649,7 @@ export class Map2D {
     g.fillStyle = css('--ink') || '#000';
     g.font = '600 13px system-ui, sans-serif';
     g.textBaseline = 'middle';
-    g.fillText(`${MODES[this.mode]}${this.focusBlock ? ` · block ${this.focusBlock}` : ''} · ${new Date().toISOString().slice(0, 10)}`, 16, 22);
+    g.fillText(`${this.modeName()}${this.focusBlock ? ` · block ${this.focusBlock}` : ''} · ${new Date().toISOString().slice(0, 10)}`, 16, 22);
     g.font = '12px system-ui, sans-serif';
     rows.forEach((c, k) => {
       g.fillStyle = c.color;
