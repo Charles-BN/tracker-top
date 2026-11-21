@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-21T00:00:00Z",
+  "title": "Design System: tracker-top",
+  "extensions": {
+    "colorMeta": {
+      "survey-blue": { "role": "primary", "displayName": "Survey Blue", "canonical": "#2a78d6", "dark": "#3987e5", "tonalRamp": ["#0d366b", "#184f95", "#256abf", "#2a78d6", "#3987e5", "#6da7ec", "#9ec5f4", "#cde2fb"] },
+      "survey-blue-wash": { "role": "primary", "displayName": "Survey Blue Wash", "canonical": "rgba(42, 120, 214, 0.10)", "dark": "rgba(57, 135, 229, 0.16)" },
+      "survey-blue-band": { "role": "primary", "displayName": "Survey Blue Band", "canonical": "rgba(42, 120, 214, 0.12)", "dark": "rgba(57, 135, 229, 0.18)" },
+      "sun": { "role": "secondary", "displayName": "Sun", "canonical": "#f5b324", "tonalRamp": ["#4a3200", "#704c00", "#9a6a00", "#c98a0a", "#f5b324", "#f8c95e", "#fbdd98", "#fdf0d0"] },
+      "series-2": { "role": "tertiary", "displayName": "Series Orange", "canonical": "#eb6834", "dark": "#d95926", "tonalRamp": ["#4d1c08", "#7a2e10", "#a8401a", "#d95926", "#eb6834", "#f29069", "#f7b89e", "#fbe0d4"] },
+      "series-3": { "role": "tertiary", "displayName": "Series Teal", "canonical": "#1baf7a", "dark": "#199e70", "tonalRamp": ["#063a28", "#0b5a3e", "#117a55", "#199e70", "#1baf7a", "#5bc99e", "#9adfc3", "#d6f3e7"] },
+      "ledger-paper": { "role": "neutral", "displayName": "Ledger Paper", "canonical": "#f3f2ee", "dark": "#0d0d0d", "tonalRamp": ["#0b0b0b", "#2c2c2a", "#52514e", "#898781", "#c3c2b7", "#e1e0d9", "#f3f2ee", "#fcfcfb"] },
+      "sheet-white": { "role": "neutral", "displayName": "Sheet White", "canonical": "#ffffff", "dark": "#1a1a19" },
+      "ledger-tint": { "role": "neutral", "displayName": "Ledger Tint", "canonical": "#f2f1ed", "dark": "#232321" },
+      "instrument-black": { "role": "neutral", "displayName": "Instrument Black", "canonical": "#16191f", "dark": "#121417", "tonalRamp": ["#0b0d10", "#16191f", "#252a33", "#3a404b", "#5a616d", "#9aa0ab", "#c9cdd4", "#e9eaee"] },
+      "instrument-ink": { "role": "neutral", "displayName": "Instrument Ink", "canonical": "#e9eaee" },
+      "instrument-muted": { "role": "neutral", "displayName": "Instrument Muted", "canonical": "#9aa0ab" },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "#0b0b0b", "dark": "#f0efec" },
+      "ink-2": { "role": "neutral", "displayName": "Ink 2", "canonical": "#52514e", "dark": "#c3c2b7" },
+      "muted": { "role": "neutral", "displayName": "Muted", "canonical": "#898781" },
+      "grid-rule": { "role": "neutral", "displayName": "Grid Rule", "canonical": "#e1e0d9", "dark": "#2c2c2a" },
+      "axis-rule": { "role": "neutral", "displayName": "Axis Rule", "canonical": "#c3c2b7", "dark": "#383835" },
+      "hairline": { "role": "neutral", "displayName": "Hairline", "canonical": "rgba(11, 11, 11, 0.12)", "dark": "rgba(255, 255, 255, 0.12)" },
+      "status-compliant": { "role": "status", "displayName": "Compliant", "canonical": "#0ca30c" },
+      "status-graded": { "role": "status", "displayName": "Graded", "canonical": "#fab219" },
+      "status-skipped": { "role": "status", "displayName": "Skipped / Invalid input", "canonical": "#ec835a" },
+      "status-noncompliant": { "role": "status", "displayName": "Non-compliant", "canonical": "#d03b3b" },
+      "status-neutral": { "role": "status", "displayName": "Awaiting elevations", "canonical": "#898781" },
+      "status-notrun": { "role": "status", "displayName": "Not optimised", "canonical": "#c3c2b7", "dark": "#52514e" },
+      "text-success": { "role": "status", "displayName": "Success Text", "canonical": "#006300", "dark": "#0ca30c" },
+      "text-warning": { "role": "status", "displayName": "Warning Text", "canonical": "#8a5a00", "dark": "#fab219" },
+      "text-critical": { "role": "status", "displayName": "Critical Text", "canonical": "#b42f2f", "dark": "#e66767" }
+    },
+    "dataPalettes": {
+      "categorical-light": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"],
+      "categorical-dark": ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9"],
+      "sequential-blue": ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"],
+      "terrain": ["#f3efe6", "#e2dacb", "#cfc3ab", "#b8a888", "#9c8a69", "#7d6c4f", "#5c4f39"],
+      "diverging-negative": ["#86b6ef", "#2a78d6", "#184f95"],
+      "diverging-positive": ["#f0a3a2", "#e34948", "#a32c2b"],
+      "other": "#898781",
+      "source": "crates/top-app/web/view3d.js, map2d.js; reversed in dark mode where noted in code"
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The single hero figure on the Overview; unit at 26px Muted." },
+      "headline": { "displayName": "Headline", "purpose": "Stat tile values; big figures at 34px / 700." },
+      "title": { "displayName": "Title", "purpose": "Card and section headings (h2); h3 at 15px." },
+      "body": { "displayName": "Body", "purpose": "Base copy, buttons, inputs; prose held to ~60ch." },
+      "table": { "displayName": "Table", "purpose": "All data tables; tabular figures, right-aligned numbers." },
+      "label": { "displayName": "Label", "purpose": "Uppercase micro-labels: table headers, eyebrows, group titles (11-12px, +0.03-0.06em)." },
+      "mono": { "displayName": "Mono", "purpose": "IDs, file names, code." }
+    },
+    "shadows": [
+      { "name": "sheet", "value": "0 1px 2px rgba(20, 22, 28, 0.05), 0 6px 20px rgba(20, 22, 28, 0.05)", "purpose": "Cards, tiles, selected settings item, save bar. Light mode only; none in dark." },
+      { "name": "popover", "value": "0 12px 32px rgba(0, 0, 0, 0.18)", "purpose": "Export menu, Columns chooser." },
+      { "name": "tooltip", "value": "0 4px 16px rgba(0, 0, 0, 0.15)", "purpose": "Chart tooltips." },
+      { "name": "toast", "value": "0 6px 24px rgba(0, 0, 0, 0.25)", "purpose": "Inverted ink toast, bottom centre." }
+    ],
+    "motion": [
+      { "name": "state", "value": "0.1s", "purpose": "Drop-zone background and border on hover/drag-over. Otherwise state changes are instant." },
+      { "name": "spinner", "value": "spin 0.8s linear infinite", "purpose": "Busy indicator, 14px ring with a Survey Blue arc." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "640px" },
+      { "name": "export-dialog", "value": "760px" },
+      { "name": "side-panels", "value": "800px" },
+      { "name": "results-split", "value": "1000px" },
+      { "name": "content-max", "value": "1440px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one primary action per view (Optimise), with the sun-yellow stale-count badge.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Optimise <span class=\"ds-badge\">12</span></button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 6px; font: 500 14px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; padding: 7px 13px; border-radius: 8px; border: 1px solid var(--border, rgba(11,11,11,0.12)); background: var(--surface, #fff); color: var(--ink, #0b0b0b); cursor: pointer; white-space: nowrap; } .ds-btn-primary { background: var(--accent, #2a78d6); border-color: var(--accent, #2a78d6); color: #fff; } .ds-btn-primary:hover { filter: brightness(1.08); } .ds-btn:focus-visible { outline: 2px solid var(--accent, #2a78d6); outline-offset: 1px; } .ds-badge { background: #f5b324; color: #0b0b0b; border-radius: 999px; padding: 0 7px; font-size: 12px; font-weight: 700; }"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Bordered white button for secondary actions; small variant for inline tools.",
+      "html": "<button class=\"ds-btn-default\">Columns</button> <button class=\"ds-btn-default ds-btn-small\">Full screen</button>",
+      "css": ".ds-btn-default { display: inline-flex; align-items: center; gap: 6px; font: 500 14px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; padding: 7px 13px; border-radius: 8px; border: 1px solid var(--border, rgba(11,11,11,0.12)); background: var(--surface, #fff); color: var(--ink, #0b0b0b); cursor: pointer; } .ds-btn-default:hover { background: var(--surface-2, #f2f1ed); } .ds-btn-default:focus-visible { outline: 2px solid var(--accent, #2a78d6); outline-offset: 1px; } .ds-btn-small { padding: 3px 9px; font-size: 12.5px; border-radius: 6px; }"
+    },
+    {
+      "name": "Top Bar Tabs",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Segmented tab strip on the instrument-black bar; active tab inverts to an ink pill.",
+      "html": "<nav class=\"ds-bar\"><div class=\"ds-tabs\"><button class=\"ds-tab\" aria-selected=\"true\">Overview</button><span class=\"ds-sep\"></span><button class=\"ds-tab\">Results</button><button class=\"ds-tab\">Map</button><button class=\"ds-tab\">3D</button></div></nav>",
+      "css": ".ds-bar { background: #16191f; padding: 10px 20px; font: 14px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-tabs { display: inline-flex; gap: 2px; align-items: center; background: rgba(255,255,255,0.05); padding: 3px; border-radius: 10px; } .ds-tab { border: 0; background: none; color: #9aa0ab; font: inherit; font-weight: 500; padding: 6px 13px; border-radius: 7px; cursor: pointer; } .ds-tab:hover { background: rgba(255,255,255,0.08); color: #e9eaee; } .ds-tab[aria-selected=\"true\"] { background: #e9eaee; color: #16191f; font-weight: 600; } .ds-tab:focus-visible { outline: 2px solid #3987e5; outline-offset: 1px; } .ds-sep { width: 1px; height: 18px; background: rgba(255,255,255,0.14); margin: 0 4px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Label above, hint below; compact bordered input with a blue focus ring.",
+      "html": "<label class=\"ds-field\"><span>Survey date</span><input class=\"ds-input\" type=\"text\" value=\"2026-11-21\"><small>Empty: read from the file or its name.</small></label>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 4px; font: 14px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-field > span { color: var(--ink-2, #52514e); font-size: 12.5px; } .ds-field small { color: var(--muted, #898781); font-size: 12px; } .ds-input { font: inherit; color: var(--ink, #0b0b0b); background: var(--surface, #fff); border: 1px solid var(--border, rgba(11,11,11,0.12)); border-radius: 6px; padding: 6px 9px; } .ds-input:focus-visible { outline: 2px solid var(--accent, #2a78d6); outline-offset: 1px; }"
+    },
+    {
+      "name": "Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip-selected",
+      "description": "Pill toggle over a hidden checkbox; selected state in Survey Blue wash.",
+      "html": "<span class=\"ds-chip\">All</span> <span class=\"ds-chip ds-chip-on\">Steep</span> <span class=\"ds-chip\">Out of date</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border, rgba(11,11,11,0.12)); background: var(--surface, #fff); color: var(--ink-2, #52514e); font: 13px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-chip:hover { color: var(--ink, #0b0b0b); } .ds-chip-on { background: var(--accent-wash, rgba(42,120,214,0.10)); border-color: var(--accent, #2a78d6); color: var(--accent, #2a78d6); font-weight: 600; }"
+    },
+    {
+      "name": "Stat Tile",
+      "kind": "card",
+      "refersTo": "tile",
+      "description": "White sheet with a label, a tabular headline figure and a muted sub-line.",
+      "html": "<div class=\"ds-tile\"><div class=\"ds-label\">Average reveal</div><div class=\"ds-value\">1.45 <small>m</small></div><div class=\"ds-sub\">min 1.20 · max 1.60</div></div>",
+      "css": ".ds-tile { background: var(--surface, #fff); border: 1px solid var(--border, rgba(11,11,11,0.12)); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(20,22,28,0.05), 0 6px 20px rgba(20,22,28,0.05); font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; width: 200px; } .ds-label { color: var(--ink-2, #52514e); font-size: 12.5px; } .ds-value { font-size: 26px; font-weight: 650; margin-top: 4px; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: var(--ink, #0b0b0b); } .ds-value small { font-size: 14px; font-weight: 500; color: var(--muted, #898781); } .ds-sub { color: var(--muted, #898781); font-size: 12.5px; margin-top: 2px; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Ledger Table",
+      "kind": "custom",
+      "refersTo": "table-header",
+      "description": "Signature data table: sticky uppercase header, 13px tabular rows, status dots, out-of-date flag.",
+      "html": "<div class=\"ds-table\"><table><thead><tr><th>Tracker</th><th>Status</th><th class=\"n\">Max angle (°)</th><th class=\"n\">Slope (%)</th></tr></thead><tbody><tr><td>P01.02.01</td><td><span class=\"ds-st\"><i style=\"background:#0ca30c\"></i>Compliant</span></td><td class=\"n\">0.84</td><td class=\"n\">3.21</td></tr><tr class=\"sel\"><td>P01.02.02</td><td><span class=\"ds-st\"><i style=\"background:#fab219\"></i>Graded (cut/fill)</span> <b class=\"ds-stale\">out of date</b></td><td class=\"n\">1.00</td><td class=\"n\">6.40</td></tr><tr><td>P01.02.03</td><td><span class=\"ds-st\"><i style=\"background:#d03b3b\"></i>Non-compliant</span></td><td class=\"n\">1.37</td><td class=\"n\">8.80</td></tr></tbody></table></div>",
+      "css": ".ds-table { overflow: auto; border: 1px solid var(--border, rgba(11,11,11,0.12)); border-radius: 10px; background: var(--surface, #fff); font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-table table { border-collapse: collapse; width: 100%; font-size: 13px; color: var(--ink, #0b0b0b); } .ds-table th, .ds-table td { padding: 7px 10px; border-bottom: 1px solid var(--grid, #e1e0d9); text-align: left; } .ds-table th { background: var(--surface-2, #f2f1ed); color: var(--ink-2, #52514e); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; } .ds-table .n { text-align: right; font-variant-numeric: tabular-nums; } .ds-table tbody tr:hover { background: var(--surface-2, #f2f1ed); } .ds-table tr.sel { background: var(--accent-wash, rgba(42,120,214,0.10)); } .ds-st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; } .ds-st i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; } .ds-stale { color: var(--warning-text, #8a5a00); font-size: 12px; font-weight: 600; }"
+    },
+    {
+      "name": "Status Pill",
+      "kind": "chip",
+      "refersTo": "pill",
+      "description": "Import report outcome: ok, refused, voided.",
+      "html": "<span class=\"ds-pill ds-ok\">Imported</span> <span class=\"ds-pill ds-bad\">Refused</span> <span class=\"ds-pill ds-void\">Voided</span>",
+      "css": ".ds-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 9px; font: 600 12px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-ok { background: rgba(12,163,12,0.14); color: var(--success-text, #006300); } .ds-bad { background: rgba(208,59,59,0.14); color: var(--critical-text, #b42f2f); } .ds-void { background: var(--surface-2, #f2f1ed); color: var(--muted, #898781); }"
+    },
+    {
+      "name": "Drop Zone",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "Dashed import target; turns Survey Blue on hover or drag-over.",
+      "html": "<div class=\"ds-drop\" tabindex=\"0\"><b>Drop survey files</b><span>or click to choose · several at once</span></div>",
+      "css": ".ds-drop { border: 2px dashed var(--border, rgba(11,11,11,0.12)); border-radius: 10px; padding: 20px 14px; text-align: center; color: var(--ink-2, #52514e); display: flex; flex-direction: column; gap: 2px; cursor: pointer; transition: background 0.1s, border-color 0.1s; font: 14px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; width: 260px; } .ds-drop b { color: var(--ink, #0b0b0b); } .ds-drop span { font-size: 12.5px; color: var(--muted, #898781); } .ds-drop:hover, .ds-drop:focus-visible { border-color: var(--accent, #2a78d6); background: var(--accent-wash, rgba(42,120,214,0.10)); outline: none; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Site Office Ledger",
+    "overview": "tracker-top is the record a site engineer opens every morning and trusts. It is a ledger of tens of thousands of piles, kept on warm paper-grey sheets under a dark instrument bar. The figures carry the page: tabular numerals, centimetre precision and honest units. Everything else (chrome, borders, labels) sits back in warm greys so a number, a profile line or a status dot is the first thing the eye lands on.\n\nThe system is crisp, technical and dense. It is a working tool, used all day on a Windows laptop, and future work leans towards more on screen, not less: tighter rows, compact controls, and the feel of a desktop CAD or GIS application rather than a web dashboard. Colour is rationed. Status hues belong to tracker state alone, one blue does all the interactive work, and data views get their own disciplined palettes (categorical, sequential, terrain, diverging) that never borrow the status colours.\n\nWhat it is not: a generic SaaS dashboard. No gradient hero cards, no decorative charts, no marketing flourish, no illustrative empty space. Every element on screen is either a figure, a control, or the label that makes a figure readable.",
+    "keyCharacteristics": [
+      "Warm paper-grey page, white sheets, hairline borders; a near-black instrument bar on top.",
+      "Tabular figures everywhere a number appears; calculated values to 2 decimals, measured ground to 3.",
+      "One interactive blue; status colours reserved for tracker state; data palettes kept separate.",
+      "Uppercase micro-labels (11–12px, tracked out) as the ledger's column headings.",
+      "Compact, bordered, lightly rounded controls; depth comes from borders and tone, not shadow.",
+      "Full light and dark themes, following the OS unless `data-theme` pins one."
+    ],
+    "rules": [
+      { "name": "The Reserved Status Rule", "body": "Green, amber, orange and red mean tracker state and nothing else. Data views that colour by a measure (angle, reveal, ground, off-rows distance) use the blue sequential, terrain or blue–red diverging ramps, never the status hues.", "section": "colors" },
+      { "name": "The One Blue Rule", "body": "Survey Blue is the only colour that says \"you can act on this\" or \"this is selected\". A second interactive hue is not allowed.", "section": "colors" },
+      { "name": "The Warm Grey Rule", "body": "Neutrals are warm (yellow-tinted) greys. No cool blue-greys in the page body; the cool greys belong to the instrument bar only.", "section": "colors" },
+      { "name": "The Tabular Figures Rule", "body": "Every number that can sit beside another number uses font-variant-numeric: tabular-nums and right alignment in tables. No proportional digits in data.", "section": "typography" },
+      { "name": "The Honest Precision Rule", "body": "Calculated values show 2 decimals, measured ground 3, and units are always present (m, %, °, mm). Never round a figure for looks.", "section": "typography" },
+      { "name": "The Border-First Rule", "body": "Every surface is bounded by a 1px hairline. Shadow never replaces a border, and nothing at rest uses more than the Sheet shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use tabular numerals and right alignment for every figure, with its unit, at 2 decimals for calculated values and 3 for measured ground.",
+      "Do keep Survey Blue (#2a78d6, dark #3987e5) as the single interactive and selection colour.",
+      "Do reserve the status colours for tracker state, and colour measures with the blue sequential, terrain or blue–red diverging ramps.",
+      "Do bound every surface with a 1px hairline and keep resting shadows to the Sheet value (none in dark mode).",
+      "Do lean compact for new UI: tables over cards, 12px gaps, 6–7px control padding, side panels over modal flows.",
+      "Do define every new colour as a token with both light and dark values.",
+      "Do use the uppercase micro-label (11–12px, +0.03–0.06em, Muted or Ink 2) for column and group headings."
+    ],
+    "donts": [
+      "Don't make it look like a generic SaaS dashboard: no gradient hero cards, decorative charts, illustrations or marketing copy.",
+      "Don't use green, amber, orange or red for anything but tracker status (or their text forms for status words and figures).",
+      "Don't introduce a second accent hue, or use the Sun yellow outside the logo and the stale-count badge.",
+      "Don't use cool blue-grey neutrals in the page body; the warm greys are the ledger.",
+      "Don't add web fonts or CDN assets: the system font stack and vendored libraries keep it working offline on locked-down PCs.",
+      "Don't round figures for neatness or drop units."
+    ]
+  }
+}

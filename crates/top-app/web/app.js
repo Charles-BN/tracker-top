@@ -847,10 +847,11 @@ function renderDetail(t) {
   el.innerHTML = `
     <div class="card-head detail-head">
       <div><h2>${esc(t.tracker)}</h2><div class="muted">Block ${esc(t.block || '–')} · section ${esc(t.section || '–')}${t.tracker_type ? ` · ${esc(t.tracker_type)}` : ''}</div></div>
-      <div style="display:flex;gap:8px;align-items:center">${statusBadge(t.status)}<button class="btn small" id="detail-3d">Show in 3D</button></div>
+      <div class="detail-tools">${statusBadge(t.status)}<button class="btn small" id="profile-full" title="Show the profile on the whole screen, with pile numbers (Esc to close)">Full screen</button><button class="btn small" id="detail-3d">Show in 3D</button></div>
     </div>
     ${t.stale && t.run_id ? '<p class="notice warn">Out of date: elevations or settings changed since this result. Click Optimise.</p>' : ''}
     ${t.n_missing ? `<p class="notice">${t.n_missing} pile${t.n_missing === 1 ? ' has' : 's have'} no elevation yet; the tracker is optimised once every pile has one.</p>` : ''}
+    <div id="profile"></div>
     <div class="kv-groups">
       <div class="kv-group"><h4>Ground</h4><div class="kv">
         ${kv('Surveyed', `${t.n_survey} of ${t.n_piles}`)}
@@ -870,8 +871,6 @@ function renderDetail(t) {
         ${kv('Span check', `${spanOk ? '✓ ' : ''}${((t.span_error ?? 0) * 1000).toFixed(1)} mm`, ' title="Largest difference between a span\'s length along the tube and its design length"')}
       </div></div>` : ''}
     </div>
-    <div class="profile-tools"><button class="btn small ghost" id="profile-full" title="Show the profile on the whole screen, with pile numbers (Esc to close)">⤢ Full screen</button></div>
-    <div id="profile"></div>
     <div class="sub-head"><h3>Piles</h3><span id="pile-cols"></span></div>
     <div class="table-wrap"><table id="pile-table"></table></div>`;
   pileColsFor = t;
