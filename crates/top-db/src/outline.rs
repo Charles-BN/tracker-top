@@ -19,6 +19,11 @@ use std::collections::BTreeMap;
 const MARGIN: f64 = 2.0;
 /// Column ends closer than this (m) are evened out into one straight line.
 const SQUARE: f64 = 3.0;
+/// A straight line may run at most this far (m) outside the stepped ends it
+/// replaces.
+const STRAIGHTEN: f64 = 5.0;
+/// A straight line keeps at least this far (m) from another block's piles.
+const CLEAR: f64 = 1.0;
 /// Trackers whose across-track positions differ by less than this (m) are in
 /// the same column.
 const SAME_COLUMN: f64 = 1.5;
@@ -41,12 +46,34 @@ pub fn block_outlines(state: &State) -> Vec<Outline> {
             .collect();
         by_block.entry(t.block.as_str()).or_default().push(pts);
     }
+    let all: Vec<(&str, f64, f64)> = state
+        .piles
+        .iter()
+        .map(|p| (p.block.as_str(), p.easting, p.northing))
+        .collect();
     let mut out: Vec<Outline> = by_block
         .into_iter()
-        .map(|(block, trackers)| Outline {
-            block: block.to_string(),
-            piles: trackers.iter().map(Vec::len).sum(),
-            rings: outline(&trackers),
+        .map(|(block, trackers)| {
+            // Piles of the other blocks around this one: the line stops half
+            // way to them.
+            let pts = trackers.iter().flatten();
+            let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+            for &(x, y) in pts {
+                (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+            }
+            const NEAR: f64 = 30.0;
+            let others: Vec<(f64, f64)> = all
+                .iter()
+                .filter(|(b, x, y)| {
+                    *b != block && *x > x0 - NEAR && *x < x1 + NEAR && *y > y0 - NEAR && *y < y1 + NEAR
+                })
+                .map(|&(_, x, y)| (x, y))
+                .collect();
+            Outline {
+                block: block.to_string(),
+                piles: trackers.iter().map(Vec::len).sum(),
+                rings: outline_among(&trackers, &others),
+            }
         })
         .collect();
     out.sort_by_key(|o| natural_key(&o.block));
@@ -57,6 +84,13 @@ pub fn block_outlines(state: &State) -> Vec<Outline> {
 /// or one per part when the block is in parts side by side, with an empty
 /// stretch (often another block) between them.
 pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
+    outline_among(trackers, &[])
+}
+
+/// [`outline`], kept clear of `others` (piles of the neighbouring blocks):
+/// the line stops half way to them, at the ends of the rows and beside the
+/// outer rows.
+pub fn outline_among(trackers: &[Vec<(f64, f64)>], others: &[(f64, f64)]) -> Vec<Vec<(f64, f64)>> {
     let Some(first) = trackers.iter().find_map(|t| t.first().copied()) else {
         return Vec::new();
     };
@@ -121,36 +155,106 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
             }
         }
     }
+    // The piles' own extent, before the margin.
+    let piles_extent: Vec<(f64, f64)> = cols.iter().map(|c| (c.1, c.2)).collect();
     for c in &mut cols {
         c.1 -= MARGIN;
         c.2 += MARGIN;
     }
+    let others_uv: Vec<(f64, f64)> = others.iter().map(|&p| to_uv(p)).collect();
 
-    // Row spacing: the typical gap between neighbouring columns.
-    let mut gaps: Vec<f64> = cols.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    // Row spacing: the typical distance from a column to the nearest column
+    // beside it (overlapping along the track). Columns of two groups of rows
+    // set between each other (shifted across the track) do not count.
+    let overlap = |a: &(f64, f64, f64), b: &(f64, f64, f64)| a.2.min(b.2) - a.1.max(b.1);
+    let mut gaps: Vec<f64> = Vec::new();
+    for (i, a) in cols.iter().enumerate() {
+        if let Some(g) = cols[i + 1..]
+            .iter()
+            .filter(|b| overlap(a, b) > 0.0)
+            .map(|b| b.0 - a.0)
+            .find(|g| *g > SAME_COLUMN)
+        {
+            gaps.push(g);
+        }
+    }
     gaps.sort_by(f64::total_cmp);
     let pitch = gaps.get(gaps.len() / 2).copied().unwrap_or(2.0 * MARGIN);
     let side = (pitch / 2.0).max(MARGIN);
 
-    // Parts: a new one starts after a gap of more than one empty row, or
-    // where neighbouring columns do not overlap along the track. The line
-    // never bridges those: the gap may hold another block.
-    let mut parts: Vec<Vec<(f64, f64, f64)>> = Vec::new();
-    for c in cols {
-        match parts
-            .last_mut()
-            .and_then(|p| p.last().copied().map(|l| (p, l)))
-        {
-            Some((p, last)) if c.0 - last.0 <= 1.6 * pitch && last.2 > c.1 && c.2 > last.1 => {
-                p.push(c)
+    // Parts: columns joined when they run beside each other (overlapping
+    // along the track) at most one empty row apart. The line never bridges
+    // anything else: the gap may hold another block.
+    let n = cols.len();
+    let mut part_of: Vec<usize> = (0..n).collect();
+    fn root(p: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while p[r] != r {
+            r = p[r];
+        }
+        p[i] = r;
+        r
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            if cols[j].0 - cols[i].0 > 1.6 * pitch {
+                break;
             }
-            _ => parts.push(vec![c]),
+            if overlap(&cols[i], &cols[j]) > 0.0 {
+                let (a, b) = (root(&mut part_of, i), root(&mut part_of, j));
+                part_of[a] = b;
+            }
         }
     }
-    parts
-        .into_iter()
-        .map(|mut cols| {
-            ring_around(&mut cols, side)
+    // How far each column's ends may go: half way to another block's pile
+    // in line with it.
+    let mut floor = vec![f64::NEG_INFINITY; n];
+    let mut ceil = vec![f64::INFINITY; n];
+    // A straight line only has to keep clear of their piles.
+    let mut floor_line = vec![f64::NEG_INFINITY; n];
+    let mut ceil_line = vec![f64::INFINITY; n];
+    for (i, c) in cols.iter().enumerate() {
+        let (lo, hi) = piles_extent[i];
+        for &(u, v) in &others_uv {
+            if (u - c.0).abs() < pitch / 2.0 {
+                if v < lo {
+                    floor[i] = floor[i].max((lo + v) / 2.0);
+                    floor_line[i] = floor_line[i].max(v + CLEAR);
+                } else if v > hi {
+                    ceil[i] = ceil[i].min((hi + v) / 2.0);
+                    ceil_line[i] = ceil_line[i].min(v - CLEAR);
+                }
+            }
+        }
+    }
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for i in 0..n {
+        let r = root(&mut part_of, i);
+        groups.entry(r).or_default().push(i);
+    }
+    groups
+        .into_values()
+        .map(|idx| {
+            let mut part: Vec<(f64, f64, f64)> = idx.iter().map(|&i| cols[i]).collect();
+            let fl: Vec<f64> = idx.iter().map(|&i| floor[i]).collect();
+            let ce: Vec<f64> = idx.iter().map(|&i| ceil[i]).collect();
+            let fll: Vec<f64> = idx.iter().map(|&i| floor_line[i]).collect();
+            let cel: Vec<f64> = idx.iter().map(|&i| ceil_line[i]).collect();
+            // Beside the outer rows: half way to another block's pile alongside.
+            let beside = |c: (f64, f64, f64), (lo, hi): (f64, f64), dir: f64| -> f64 {
+                others_uv
+                    .iter()
+                    .filter(|(u, v)| {
+                        let d = dir * (u - c.0);
+                        d > 0.0 && d < side + 1e-6 && *v >= lo - MARGIN && *v <= hi + MARGIN
+                    })
+                    .map(|(u, _)| (c.0 + u) / 2.0)
+                    .fold(c.0 + dir * side, |a, b| if dir < 0.0 { a.max(b) } else { a.min(b) })
+            };
+            let (f, l) = (idx[0], idx[idx.len() - 1]);
+            let left_edge = beside(cols[f], piles_extent[f], -1.0);
+            let right_edge = beside(cols[l], piles_extent[l], 1.0);
+            ring_around(&mut part, side, (&fl, &ce), (&fll, &cel), (left_edge, right_edge))
                 .into_iter()
                 .map(|p| {
                     let (x, y) = to_xy(p);
@@ -163,7 +267,13 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
 
 /// The ring (along / across the track) around neighbouring columns
 /// (across-track position, low end, high end).
-fn ring_around(cols: &mut [(f64, f64, f64)], side: f64) -> Vec<(f64, f64)> {
+fn ring_around(
+    cols: &mut [(f64, f64, f64)],
+    side: f64,
+    (floor, ceil): (&[f64], &[f64]),
+    (floor_line, ceil_line): (&[f64], &[f64]),
+    (left_edge, right_edge): (f64, f64),
+) -> Vec<(f64, f64)> {
     // Neighbouring strips must overlap by 1 m at least, or the line would
     // pinch to nothing.
     for i in 1..cols.len() {
@@ -181,41 +291,89 @@ fn ring_around(cols: &mut [(f64, f64, f64)], side: f64) -> Vec<(f64, f64)> {
     fill_notches(cols);
     square_off(cols, |c| c.2, |c, v| c.2 = v, true);
     square_off(cols, |c| c.1, |c, v| c.1 = v, false);
+    // Never past half way to another block.
+    for (i, c) in cols.iter_mut().enumerate() {
+        c.1 = c.1.max(floor[i]);
+        c.2 = c.2.min(ceil[i]);
+    }
 
     // Strip edges across the track.
     let n = cols.len();
     let left = |i: usize| {
         if i == 0 {
-            cols[0].0 - side
+            left_edge.max(cols[0].0 - side)
         } else {
             (cols[i - 1].0 + cols[i].0) / 2.0
         }
     };
     let right = |i: usize| {
         if i + 1 == n {
-            cols[n - 1].0 + side
+            right_edge.min(cols[n - 1].0 + side)
         } else {
             (cols[i].0 + cols[i + 1].0) / 2.0
         }
     };
+    // The low ends and the high ends as steps across the columns, each then
+    // straightened where it steps steadily (rows staggered along an edge).
+    let mut low = vec![(left(0), cols[0].1)];
+    let mut high = vec![(left(0), cols[0].2)];
+    for i in 0..n {
+        low.push((right(i), cols[i].1));
+        high.push((right(i), cols[i].2));
+        if i + 1 < n {
+            low.push((right(i), cols[i + 1].1));
+            high.push((right(i), cols[i + 1].2));
+        }
+    }
+    // How far a straight line may go: clear of another block's piles, checked
+    // across each column's strip.
+    let lim = |line: &[f64]| -> Vec<(f64, f64)> {
+        (0..n)
+            .flat_map(|i| [(left(i), line[i]), (cols[i].0, line[i]), (right(i), line[i])])
+            .collect()
+    };
+    let low_lim = lim(floor_line);
+    let high_lim = lim(ceil_line);
+    let low = straighten(&low, -1.0, &low_lim);
+    let high = straighten(&high, 1.0, &high_lim);
     // Anticlockwise: along the low ends, up the far side, back along the
     // high ends, down the near side.
-    let mut ring = vec![(left(0), cols[0].1)];
-    for i in 0..n {
-        ring.push((right(i), cols[i].1));
-        if i + 1 < n {
-            ring.push((right(i), cols[i + 1].1));
-        }
-    }
-    for i in (0..n).rev() {
-        ring.push((right(i), cols[i].2));
-        ring.push((left(i), cols[i].2));
-        if i > 0 {
-            ring.push((left(i), cols[i - 1].2));
-        }
-    }
+    let mut ring = low;
+    ring.extend(high.into_iter().rev());
     ring.push(ring[0]);
     drop_straight(&ring)
+}
+
+/// Straight lines in place of steps: from each corner, the longest straight
+/// line to a later corner that keeps every corner in between on the inside
+/// (`out` = 1: the line is above them, -1: below) and no more than
+/// `STRAIGHTEN` from any of them, so real notches stay. Points are in order
+/// across the columns.
+fn straighten(pts: &[(f64, f64)], out: f64, limits: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let n = pts.len();
+    if n < 3 {
+        return pts.to_vec();
+    }
+    let valid = |a: usize, b: usize| -> bool {
+        let (pa, pb) = (pts[a], pts[b]);
+        if pb.0 - pa.0 < 1e-9 {
+            return b == a + 1;
+        }
+        let y = |x: f64| pa.1 + (pb.1 - pa.1) * (x - pa.0) / (pb.0 - pa.0);
+        pts[a + 1..b].iter().all(|p| (-1e-6..=STRAIGHTEN).contains(&(out * (y(p.0) - p.1))))
+            && limits
+                .iter()
+                .filter(|(x, _)| *x >= pa.0 && *x <= pb.0)
+                .all(|&(x, lim)| out * (lim - y(x)) >= -1e-6)
+    };
+    let mut kept = vec![pts[0]];
+    let mut a = 0;
+    while a + 1 < n {
+        let b = (a + 1..n).rev().find(|&b| valid(a, b)).unwrap_or(a + 1);
+        kept.push(pts[b]);
+        a = b;
+    }
+    kept
 }
 
 /// A column (or two side by side) shorter than the columns on both sides
