@@ -19,6 +19,13 @@ use std::collections::BTreeMap;
 const MARGIN: f64 = 2.0;
 /// Column ends closer than this (m) are evened out into one straight line.
 const SQUARE: f64 = 3.0;
+/// A straight line may run at most this far (m) outside the stepped ends it
+/// replaces.
+const STRAIGHTEN: f64 = 5.0;
+/// Corners looked at ahead when straightening.
+const LOOK_AHEAD: usize = 120;
+/// A straight line keeps at least this far (m) from another block's piles.
+const CLEAR: f64 = 1.0;
 /// Trackers whose across-track positions differ by less than this (m) are in
 /// the same column.
 const SAME_COLUMN: f64 = 1.5;
@@ -41,12 +48,34 @@ pub fn block_outlines(state: &State) -> Vec<Outline> {
             .collect();
         by_block.entry(t.block.as_str()).or_default().push(pts);
     }
+    let all: Vec<(&str, f64, f64)> = state
+        .piles
+        .iter()
+        .map(|p| (p.block.as_str(), p.easting, p.northing))
+        .collect();
     let mut out: Vec<Outline> = by_block
         .into_iter()
-        .map(|(block, trackers)| Outline {
-            block: block.to_string(),
-            piles: trackers.iter().map(Vec::len).sum(),
-            rings: outline(&trackers),
+        .map(|(block, trackers)| {
+            // Piles of the other blocks around this one: the line stops half
+            // way to them.
+            let pts = trackers.iter().flatten();
+            let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+            for &(x, y) in pts {
+                (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+            }
+            const NEAR: f64 = 30.0;
+            let others: Vec<(f64, f64)> = all
+                .iter()
+                .filter(|(b, x, y)| {
+                    *b != block && *x > x0 - NEAR && *x < x1 + NEAR && *y > y0 - NEAR && *y < y1 + NEAR
+                })
+                .map(|&(_, x, y)| (x, y))
+                .collect();
+            Outline {
+                block: block.to_string(),
+                piles: trackers.iter().map(Vec::len).sum(),
+                rings: outline_among(&trackers, &others),
+            }
         })
         .collect();
     out.sort_by_key(|o| natural_key(&o.block));
@@ -57,6 +86,13 @@ pub fn block_outlines(state: &State) -> Vec<Outline> {
 /// or one per part when the block is in parts side by side, with an empty
 /// stretch (often another block) between them.
 pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
+    outline_among(trackers, &[])
+}
+
+/// [`outline`], kept clear of `others` (piles of the neighbouring blocks):
+/// the line stops half way to them, at the ends of the rows and beside the
+/// outer rows.
+pub fn outline_among(trackers: &[Vec<(f64, f64)>], others: &[(f64, f64)]) -> Vec<Vec<(f64, f64)>> {
     let Some(first) = trackers.iter().find_map(|t| t.first().copied()) else {
         return Vec::new();
     };
@@ -90,6 +126,8 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
         )
     };
 
+    let others_uv: Vec<(f64, f64)> = others.iter().map(|&p| to_uv(p)).collect();
+
     // Trackers: across-track position, and their extent along the track.
     let mut tracks: Vec<(f64, f64, f64)> = trackers
         .iter()
@@ -104,118 +142,384 @@ pub fn outline(trackers: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
         .collect();
     tracks.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Columns: (u, low end, high end).
-    let mut cols: Vec<(f64, f64, f64)> = Vec::new();
+    // Columns: trackers in line, with the stretch each one covers.
+    let mut cols: Vec<Column> = Vec::new();
     let mut members = 0.0;
     for (u, lo, hi) in tracks {
         match cols.last_mut() {
-            Some(c) if u - c.0 < SAME_COLUMN => {
-                c.0 = (c.0 * members + u) / (members + 1.0);
-                c.1 = c.1.min(lo);
-                c.2 = c.2.max(hi);
+            Some(c) if u - c.u < SAME_COLUMN => {
+                c.u = (c.u * members + u) / (members + 1.0);
+                c.pieces.push(Piece::new(lo, hi));
                 members += 1.0;
             }
             _ => {
-                cols.push((u, lo, hi));
+                cols.push(Column {
+                    u,
+                    pieces: vec![Piece::new(lo, hi)],
+                });
                 members = 1.0;
             }
         }
     }
     for c in &mut cols {
-        c.1 -= MARGIN;
-        c.2 += MARGIN;
+        c.pieces.sort_by(|a, b| a.lo.total_cmp(&b.lo));
     }
 
-    // Row spacing: the typical gap between neighbouring columns.
-    let mut gaps: Vec<f64> = cols.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    // Row spacing: the typical distance from a column to the nearest column
+    // beside it (overlapping along the track). Columns of two groups of rows
+    // set between each other (shifted across the track) do not count.
+    let extent = |c: &Column| (c.u, c.lo() - MARGIN, c.hi() + MARGIN);
+    let overlap = |a: (f64, f64, f64), b: (f64, f64, f64)| a.2.min(b.2) - a.1.max(b.1);
+    let mut gaps: Vec<f64> = Vec::new();
+    for (i, a) in cols.iter().enumerate() {
+        if let Some(g) = cols[i + 1..]
+            .iter()
+            .filter(|b| overlap(extent(a), extent(b)) > 0.0)
+            .map(|b| b.u - a.u)
+            .find(|g| *g > SAME_COLUMN)
+        {
+            gaps.push(g);
+        }
+    }
     gaps.sort_by(f64::total_cmp);
     let pitch = gaps.get(gaps.len() / 2).copied().unwrap_or(2.0 * MARGIN);
     let side = (pitch / 2.0).max(MARGIN);
 
-    // Parts: a new one starts after a gap of more than one empty row, or
-    // where neighbouring columns do not overlap along the track. The line
-    // never bridges those: the gap may hold another block.
-    let mut parts: Vec<Vec<(f64, f64, f64)>> = Vec::new();
-    for c in cols {
-        match parts
-            .last_mut()
-            .and_then(|p| p.last().copied().map(|l| (p, l)))
-        {
-            Some((p, last)) if c.0 - last.0 <= 1.6 * pitch && last.2 > c.1 && c.2 > last.1 => {
-                p.push(c)
+    // The trackers of a column form one stretch, unless another block's pile
+    // lies in line between them: the line then goes around it. Each stretch
+    // reaches MARGIN beyond its piles, but never past half way to another
+    // block's pile in line with it.
+    for c in &mut cols {
+        let in_line: Vec<f64> = others_uv
+            .iter()
+            .filter(|(u, _)| (u - c.u).abs() < pitch / 2.0)
+            .map(|&(_, v)| v)
+            .collect();
+        let mut joined: Vec<Piece> = Vec::new();
+        for p in c.pieces.drain(..) {
+            match joined.last_mut() {
+                Some(last)
+                    if p.lo <= last.hi || !in_line.iter().any(|&v| v > last.hi && v < p.lo) =>
+                {
+                    last.hi = last.hi.max(p.hi);
+                }
+                _ => joined.push(p),
             }
-            _ => parts.push(vec![c]),
+        }
+        for p in &mut joined {
+            for &v in &in_line {
+                if v < p.lo {
+                    p.floor = p.floor.max((p.lo + v) / 2.0);
+                } else if v > p.hi {
+                    p.ceil = p.ceil.min((p.hi + v) / 2.0);
+                }
+            }
+            p.lo = (p.lo - MARGIN).max(p.floor);
+            p.hi = (p.hi + MARGIN).min(p.ceil);
+        }
+        c.pieces = joined;
+    }
+
+    // Parts: columns joined when they run beside each other (overlapping
+    // along the track) at most one empty row apart. The line never bridges
+    // anything else: the gap may hold another block.
+    let n = cols.len();
+    let mut part_of: Vec<usize> = (0..n).collect();
+    fn root(p: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while p[r] != r {
+            r = p[r];
+        }
+        p[i] = r;
+        r
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            if cols[j].u - cols[i].u > 1.6 * pitch {
+                break;
+            }
+            if overlap(extent(&cols[i]), extent(&cols[j])) > 0.0 {
+                let (a, b) = (root(&mut part_of, i), root(&mut part_of, j));
+                part_of[a] = b;
+            }
         }
     }
-    parts
-        .into_iter()
-        .map(|mut cols| {
-            ring_around(&mut cols, side)
-                .into_iter()
-                .map(|p| {
-                    let (x, y) = to_xy(p);
-                    ((x * 100.0).round() / 100.0, (y * 100.0).round() / 100.0)
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for i in 0..n {
+        let r = root(&mut part_of, i);
+        groups.entry(r).or_default().push(i);
+    }
+    let mut rings = Vec::new();
+    for idx in groups.into_values() {
+        let mut part: Vec<Column> = idx.iter().map(|&i| cols[i].clone()).collect();
+        // Beside the outer rows: half way to another block's pile alongside.
+        let beside = |c: &Column, dir: f64| -> f64 {
+            others_uv
+                .iter()
+                .filter(|(u, v)| {
+                    let d = dir * (u - c.u);
+                    d > 0.0 && d < side + 1e-6 && *v >= c.lo() && *v <= c.hi()
                 })
-                .collect()
-        })
-        .collect()
+                .map(|(u, _)| (c.u + u) / 2.0)
+                .fold(c.u + dir * side, |a, b| if dir < 0.0 { a.max(b) } else { a.min(b) })
+        };
+        let edges = (beside(&part[0], -1.0), beside(&part[part.len() - 1], 1.0));
+        for ring in rings_around(&mut part, side, edges) {
+            let ring = straighten_ring(&ring, &others_uv);
+            rings.push(
+                drop_straight(&ring)
+                    .into_iter()
+                    .map(|p| {
+                        let (x, y) = to_xy(p);
+                        ((x * 100.0).round() / 100.0, (y * 100.0).round() / 100.0)
+                    })
+                    .collect(),
+            );
+        }
+    }
+    rings
 }
 
-/// The ring (along / across the track) around neighbouring columns
-/// (across-track position, low end, high end).
-fn ring_around(cols: &mut [(f64, f64, f64)], side: f64) -> Vec<(f64, f64)> {
-    // Neighbouring strips must overlap by 1 m at least, or the line would
-    // pinch to nothing.
-    for i in 1..cols.len() {
-        let (a, b) = (cols[i - 1], cols[i]);
-        if a.2 < b.1 + 1.0 {
-            cols[i].1 = cols[i].1.min(a.2 - 1.0);
-        }
-        if b.2 < a.1 + 1.0 {
-            cols[i - 1].1 = cols[i - 1].1.min(b.2 - 1.0);
+/// A stretch of a column along the track, and how far its ends may go (half
+/// way to another block's pile in line with it).
+#[derive(Clone, Copy, Debug)]
+struct Piece {
+    lo: f64,
+    hi: f64,
+    floor: f64,
+    ceil: f64,
+}
+
+impl Piece {
+    fn new(lo: f64, hi: f64) -> Self {
+        Piece {
+            lo,
+            hi,
+            floor: f64::NEG_INFINITY,
+            ceil: f64::INFINITY,
         }
     }
+}
 
-    // Fill notches one or two columns wide, then even out ends that differ by
-    // less than SQUARE; both only move the line outwards.
-    fill_notches(cols);
-    square_off(cols, |c| c.2, |c, v| c.2 = v, true);
-    square_off(cols, |c| c.1, |c, v| c.1 = v, false);
+/// Trackers in line: their across-track position and the stretches they cover.
+#[derive(Clone, Debug)]
+struct Column {
+    u: f64,
+    pieces: Vec<Piece>,
+}
 
-    // Strip edges across the track.
+impl Column {
+    fn lo(&self) -> f64 {
+        self.pieces.first().map_or(0.0, |p| p.lo)
+    }
+    fn hi(&self) -> f64 {
+        self.pieces.last().map_or(0.0, |p| p.hi)
+    }
+}
+
+/// The rings (along / across the track) around neighbouring columns: their
+/// strips (half way to the next column; beside the outer ones, `side` or up
+/// to `edges`) over the stretches they cover, joined.
+fn rings_around(cols: &mut [Column], side: f64, (left_edge, right_edge): (f64, f64)) -> Vec<Vec<(f64, f64)>> {
     let n = cols.len();
+    // The outer ends of each column, as (across, low end, high end).
+    let mut ends: Vec<(f64, f64, f64)> = cols.iter().map(|c| (c.u, c.lo(), c.hi())).collect();
+    // Neighbouring strips must overlap by 1 m at least, or the line would
+    // pinch to nothing.
+    for i in 1..n {
+        let (a, b) = (ends[i - 1], ends[i]);
+        if a.2 < b.1 + 1.0 {
+            ends[i].1 = ends[i].1.min(a.2 - 1.0);
+        }
+        if b.2 < a.1 + 1.0 {
+            ends[i - 1].1 = ends[i - 1].1.min(b.2 - 1.0);
+        }
+    }
+    // Fill notches one or two columns wide, then even out ends that differ by
+    // less than SQUARE; both only move the line outwards, never past half way
+    // to another block.
+    fill_notches(&mut ends);
+    square_off(&mut ends, |c| c.2, |c, v| c.2 = v, true);
+    square_off(&mut ends, |c| c.1, |c, v| c.1 = v, false);
+    for (c, e) in cols.iter_mut().zip(&ends) {
+        let first = c.pieces.first_mut().expect("a column has a stretch");
+        first.lo = e.1.max(first.floor).min(first.lo);
+        let last = c.pieces.last_mut().expect("a column has a stretch");
+        last.hi = e.2.min(last.ceil).max(last.hi);
+    }
+
+    // Strips across the track.
     let left = |i: usize| {
         if i == 0 {
-            cols[0].0 - side
+            left_edge.max(cols[0].u - side)
         } else {
-            (cols[i - 1].0 + cols[i].0) / 2.0
+            (cols[i - 1].u + cols[i].u) / 2.0
         }
     };
     let right = |i: usize| {
         if i + 1 == n {
-            cols[n - 1].0 + side
+            right_edge.min(cols[n - 1].u + side)
         } else {
-            (cols[i].0 + cols[i + 1].0) / 2.0
+            (cols[i].u + cols[i + 1].u) / 2.0
         }
     };
-    // Anticlockwise: along the low ends, up the far side, back along the
-    // high ends, down the near side.
-    let mut ring = vec![(left(0), cols[0].1)];
-    for i in 0..n {
-        ring.push((right(i), cols[i].1));
-        if i + 1 < n {
-            ring.push((right(i), cols[i + 1].1));
+    let rects: Vec<(f64, f64, f64, f64)> = (0..n)
+        .flat_map(|i| cols[i].pieces.iter().map(move |p| (left(i), right(i), p.lo, p.hi)))
+        .collect();
+    union_rings(&rects)
+}
+
+/// Outer boundaries (anticlockwise) of the union of rectangles (x0, x1, y0, y1).
+fn union_rings(rects: &[(f64, f64, f64, f64)]) -> Vec<Vec<(f64, f64)>> {
+    let grid = |vals: Vec<f64>| -> Vec<f64> {
+        let mut v = vals;
+        v.sort_by(f64::total_cmp);
+        v.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        v
+    };
+    let xs = grid(rects.iter().flat_map(|r| [r.0, r.1]).collect());
+    let ys = grid(rects.iter().flat_map(|r| [r.2, r.3]).collect());
+    let (nx, ny) = (xs.len(), ys.len());
+    if nx < 2 || ny < 2 {
+        return Vec::new();
+    }
+    let at = |v: &[f64], x: f64| v.partition_point(|a| *a < x - 1e-6);
+    let mut on = vec![false; (nx - 1) * (ny - 1)];
+    for r in rects {
+        for i in at(&xs, r.0)..at(&xs, r.1) {
+            for j in at(&ys, r.2)..at(&ys, r.3) {
+                on[i * (ny - 1) + j] = true;
+            }
         }
     }
-    for i in (0..n).rev() {
-        ring.push((right(i), cols[i].2));
-        ring.push((left(i), cols[i].2));
-        if i > 0 {
-            ring.push((left(i), cols[i - 1].2));
+    let cell = |i: isize, j: isize| -> bool {
+        i >= 0 && j >= 0 && (i as usize) < nx - 1 && (j as usize) < ny - 1 && on[i as usize * (ny - 1) + j as usize]
+    };
+    // Boundary edges, interior on the left, between grid nodes (i, j).
+    let mut next: std::collections::HashMap<(usize, usize), Vec<(usize, usize)>> = Default::default();
+    for i in 0..nx - 1 {
+        for j in 0..ny - 1 {
+            if !on[i * (ny - 1) + j] {
+                continue;
+            }
+            let (a, b) = (i as isize, j as isize);
+            if !cell(a, b - 1) {
+                next.entry((i, j)).or_default().push((i + 1, j));
+            }
+            if !cell(a + 1, b) {
+                next.entry((i + 1, j)).or_default().push((i + 1, j + 1));
+            }
+            if !cell(a, b + 1) {
+                next.entry((i + 1, j + 1)).or_default().push((i, j + 1));
+            }
+            if !cell(a - 1, b) {
+                next.entry((i, j + 1)).or_default().push((i, j));
+            }
         }
     }
-    ring.push(ring[0]);
-    drop_straight(&ring)
+    let mut starts: Vec<(usize, usize)> = next.keys().copied().collect();
+    starts.sort();
+    let mut rings = Vec::new();
+    for s in starts {
+        while next.get(&s).is_some_and(|v| !v.is_empty()) {
+            let mut ring = vec![s];
+            let mut cur = s;
+            loop {
+                let Some(list) = next.get_mut(&cur) else { break };
+                let Some(nxt) = list.pop() else { break };
+                if nxt == s {
+                    break;
+                }
+                ring.push(nxt);
+                cur = nxt;
+            }
+            let pts: Vec<(f64, f64)> = ring.iter().map(|&(i, j)| (xs[i], ys[j])).collect();
+            let area: f64 = (0..pts.len())
+                .map(|k| {
+                    let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
+                    a.0 * b.1 - b.0 * a.1
+                })
+                .sum();
+            if area > 1e-6 && pts.len() >= 3 {
+                rings.push(pts);
+            }
+        }
+    }
+    rings
+}
+
+/// Straight lines in place of steps, around a whole ring (anticlockwise, not
+/// closed): from each corner, the longest straight line to a later corner
+/// that keeps every corner in between inside (on its left), no more than
+/// `STRAIGHTEN` from it, so that real notches stay, and at least `CLEAR`
+/// from any other block's pile, none of which may end up inside.
+fn straighten_ring(ring: &[(f64, f64)], others: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let n = ring.len();
+    if n < 4 {
+        let mut r = ring.to_vec();
+        r.push(ring[0]);
+        return r;
+    }
+    let p = |k: usize| ring[k % n];
+    let valid = |a: usize, b: usize| -> bool {
+        let (pa, pb) = (p(a), p(b));
+        let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
+        let len = dx.hypot(dy);
+        if len < 1e-9 {
+            return false;
+        }
+        let side = |q: (f64, f64)| (dx * (q.1 - pa.1) - dy * (q.0 - pa.0)) / len;
+        let chain: Vec<(f64, f64)> = (a..=b).map(p).collect();
+        if !chain[1..chain.len() - 1].iter().all(|&q| (-1e-6..=STRAIGHTEN).contains(&side(q))) {
+            return false;
+        }
+        // The area the line adds must hold no other block's pile, and the
+        // line keeps clear of them.
+        let (mut x0, mut x1, mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        for q in &chain {
+            (x0, x1, y0, y1) = (x0.min(q.0), x1.max(q.0), y0.min(q.1), y1.max(q.1));
+        }
+        others
+            .iter()
+            .filter(|o| o.0 > x0 - CLEAR && o.0 < x1 + CLEAR && o.1 > y0 - CLEAR && o.1 < y1 + CLEAR)
+            .all(|&o| {
+                let t = (((o.0 - pa.0) * dx + (o.1 - pa.1) * dy) / (len * len)).clamp(0.0, 1.0);
+                let dist = (o.0 - pa.0 - t * dx).hypot(o.1 - pa.1 - t * dy);
+                dist >= CLEAR && !in_polygon(&chain, o)
+            })
+    };
+    // Start at the corner that begins the longest side: a real corner.
+    let start = (0..n)
+        .max_by(|&a, &b| {
+            let l = |k: usize| (p(k + 1).0 - p(k).0).hypot(p(k + 1).1 - p(k).1);
+            l(a).total_cmp(&l(b))
+        })
+        .unwrap_or(0);
+    let mut kept = Vec::new();
+    let mut a = start;
+    while a < start + n {
+        kept.push(p(a));
+        // The farthest corner a straight line can reach (looking a bounded
+        // number of corners ahead).
+        let reach = (start + n - a).min(LOOK_AHEAD);
+        let step = (2..=reach).rev().find(|&len| valid(a, a + len)).unwrap_or(1);
+        a += step;
+    }
+    kept.push(p(start));
+    kept
+}
+
+/// Is `q` inside the closed polygon `poly` (even-odd rule)?
+fn in_polygon(poly: &[(f64, f64)], q: (f64, f64)) -> bool {
+    let mut c = false;
+    let n = poly.len();
+    for k in 0..n {
+        let (a, b) = (poly[k], poly[(k + 1) % n]);
+        if (a.1 > q.1) != (b.1 > q.1) && q.0 < (b.0 - a.0) * (q.1 - a.1) / (b.1 - a.1) + a.0 {
+            c = !c;
+        }
+    }
+    c
 }
 
 /// A column (or two side by side) shorter than the columns on both sides
@@ -425,5 +729,29 @@ mod tests {
             "no pile of the other block inside"
         );
         assert!(rings.iter().all(|r| axis_aligned(r)));
+    }
+
+    #[test]
+    fn a_block_goes_around_another_block_in_line_with_its_own_row() {
+        // Block A: five full rows, except the third, which has a gap filled
+        // by a row of block B (as GESF block 5 around block 6's first row).
+        let mut a = trackers(0.0, 5, |_| 0.0, 20); // 152 m long rows
+        let b_row: Vec<(f64, f64)> = (0..6).map(|j| (10.8, 60.0 + 8.0 * j as f64)).collect();
+        a[2] = (0..6).map(|j| (10.8, 8.0 * j as f64)).collect(); // south of B
+        a.push((0..6).map(|j| (10.8, 112.0 + 8.0 * j as f64)).collect()); // north of B
+        // East of it, block A only covers the north, block B the rest.
+        for (k, u) in [(3, 16.2), (4, 21.6)] {
+            a[k] = (0..6).map(|j| (u, 112.0 + 8.0 * j as f64)).collect();
+        }
+        let mut others = b_row.clone();
+        for u in [16.2, 21.6] {
+            others.extend((0..12).map(|j| (u, 8.0 * j as f64)));
+        }
+        let rings = outline_among(&a, &others);
+        assert!(a.iter().flatten().all(|&p| rings.iter().any(|r| inside(r, p))));
+        assert!(
+            others.iter().all(|&p| rings.iter().all(|r| !inside(r, p))),
+            "block B stays outside: {rings:?}"
+        );
     }
 }
