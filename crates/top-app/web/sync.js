@@ -122,7 +122,7 @@ function loadGoogleSignIn() {
   return gisLoading;
 }
 
-class DriveTarget {
+export class DriveTarget {
   constructor({ clientId, folderId, folderName }) {
     this.kind = 'drive';
     this.clientId = clientId;

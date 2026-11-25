@@ -26,6 +26,7 @@ pub const ASSETS: &[Asset] = &[
     asset!("map2d.js", "text/javascript; charset=utf-8"),
     asset!("columns.js", "text/javascript; charset=utf-8"),
     asset!("plots.js", "text/javascript; charset=utf-8"),
+    asset!("drivewatch.js", "text/javascript; charset=utf-8"),
     asset!("config.js", "text/javascript; charset=utf-8"),
     asset!(
         "vendor/three.module.min.js",

@@ -340,6 +340,16 @@ file found there or in its subfolders as a field survey, then re-optimises. File
 imported are skipped; files still being written wait for the next scan; results appear in
 Settings and on the Overview.
 
+**A Google Drive folder, online** (same card, *Google Drive folder (online)*): paste the folder's
+link and click *Watch this folder*. While the page is open (desktop program or browser version),
+it checks the folder every minute, with its subfolders, and imports each new CSV/TXT/Excel file,
+and each Google Sheet (read as Excel), as a field survey. Nothing is installed: the page signs in
+with Google, as for the shared database on *Google Drive online* (same OAuth client ID; Google
+asks to sign in again after an hour and after a reload: *Sign in again*). Files already imported
+(same content) are skipped; a file whose content changes is imported again. The watch is kept by
+this browser and comes back when the page opens. Imports show as *Google Drive watch* in the
+history.
+
 To gather surveys from **Trimble Connect** with no programming, install **Trimble Connect Sync**
 (or Trimble Connect for Windows) on the computer running `tracker-top`, sync the project folder
 where the surveyors upload their daily reports, and point the watch folder at the local copy.

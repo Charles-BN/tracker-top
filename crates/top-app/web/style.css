@@ -588,3 +588,7 @@ details.more p { margin-top: 6px; line-height: 1.5; }
 .pile-rules td { padding: 4px 8px 4px 0; border-top: 1px solid var(--grid); vertical-align: middle; }
 .pile-rules input[type="number"] { width: 90px; }
 .pile-rules .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.drive-watch { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--grid); }
+.drive-watch-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.drive-watch-row input { flex: 1 1 260px; min-width: 0; }

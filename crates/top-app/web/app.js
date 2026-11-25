@@ -2,6 +2,7 @@ import { renderProfile, isMotorPile } from './profile.js';
 import { createSync, folderAccessSupported } from './sync.js';
 import { visibleColumns, headCells, columnsButton } from './columns.js';
 import { renderPlots } from './plots.js';
+import { driveWatch, initDriveWatch, watchDriveFolder, resumeDriveWatch, stopDriveWatch } from './drivewatch.js';
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -311,7 +312,8 @@ renderers.overview = async () => {
       </div>
       <div class="act"><div class="act-head"><h3>Shared database</h3><a href="#settings" data-settings="database">Settings</a></div><div id="ov-share"></div></div>
       <div class="act"><div class="act-head"><h3>Watch folder</h3><a href="#settings" data-settings="survey">Settings</a></div>
-        ${watch_folder ? `<p class="mono" style="word-break:break-all">${esc(watch_folder)}</p><p class="ink2">${watch.error ? `<span style="color:var(--critical-text)">${esc(watch.error)}</span>` : `Last scan ${esc(watch.last_scan || 'pending')}`}</p>${events ? `<ul class="findings">${events}</ul>` : ''}` : '<p class="muted">Off.</p>'}
+        ${watch_folder ? `<p class="mono" style="word-break:break-all">${esc(watch_folder)}</p><p class="ink2">${watch.error ? `<span style="color:var(--critical-text)">${esc(watch.error)}</span>` : `Last scan ${esc(watch.last_scan || 'pending')}`}</p>${events ? `<ul class="findings">${events}</ul>` : ''}` : (driveWatch.folder ? '' : '<p class="muted">Off.</p>')}
+        ${driveWatch.folder ? `<p><b>Google Drive: ${esc(driveWatch.folder)}</b></p><p class="ink2">${driveWatch.error ? `<span style="color:var(--critical-text)">${esc(driveWatch.error)}</span>` : `Last check ${esc(driveWatch.last_scan || 'pending')}`}</p>` : ''}
       </div>
     </div>`;
   const drawBlocks = () => {
@@ -1382,6 +1384,39 @@ function renderDatabaseCard(sum) {
   }
 }
 
+/** Google OAuth client ID: the shared database's, else the site's. */
+const driveClientId = () => sync?.state?.drive?.clientId || CONFIG.googleClientId || '';
+
+/** The Google Drive folder watch in Settings > Survey import. */
+function renderDriveWatch() {
+  const w = driveWatch;
+  $('#dwatch-link').value = w.link || $('#dwatch-link').value;
+  $('#dwatch-start').textContent = w.folder ? 'Watch another folder' : 'Watch this folder';
+  $('#dwatch-resume').hidden = !w.needs_signin;
+  $('#dwatch-stop').hidden = !w.folder;
+  const events = w.events.map((e) => `<tr><td class="muted">${esc(e.at)}</td><td>${esc(e.file)}</td><td>${e.accepted ? '<span class="pill ok">✓ Imported</span>' : '<span class="pill bad">✕ Not imported</span>'}</td><td class="ink2">${esc(e.message)}</td></tr>`).join('');
+  $('#dwatch-status').innerHTML = w.folder
+    ? `<p class="ink2">Watching <b>${esc(w.folder)}</b> · ${w.error ? `<span style="color:var(--critical-text)">${esc(w.error)}</span>` : `last check ${esc(w.last_scan || 'pending')} · ${int(w.files_seen)} files checked`}</p>
+       ${events ? `<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Time</th><th>File</th><th>Result</th><th>Details</th></tr></thead><tbody>${events}</tbody></table></div>` : '<p class="muted" style="margin-top:6px">No new file seen yet.</p>'}`
+    : (driveClientId() ? '' : '<p class="muted">Needs the Google OAuth client ID: Settings > Database > Shared database.</p>');
+}
+
+$('#dwatch-start').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await watchDriveFolder($('#dwatch-link').value, driveClientId());
+    toast(`Watching the Google Drive folder ${driveWatch.folder}.`);
+  } catch (err) { toast(err.message, true); }
+  btn.disabled = false;
+  renderDriveWatch();
+});
+$('#dwatch-resume').addEventListener('click', async () => {
+  try { await resumeDriveWatch(); } catch (err) { toast(err.message, true); }
+  renderDriveWatch();
+});
+$('#dwatch-stop').addEventListener('click', () => { stopDriveWatch(); renderDriveWatch(); toast('No longer watching the Google Drive folder.'); });
+
 function renderBrowserWatch() {
   const w = browser.watch;
   const supported = browser.folderAccessSupported();
@@ -1470,6 +1505,7 @@ renderers.settings = async () => {
   };
   const w = BROWSER ? browser.watch : sum.watch;
   if (BROWSER) renderBrowserWatch();
+  renderDriveWatch();
   const events = (w.events || []).map((e) => `<tr><td class="muted">${esc(e.at)}</td><td>${esc(e.file)}</td><td>${e.accepted ? '<span class="pill ok">✓ Imported</span>' : '<span class="pill bad">✕ Not imported</span>'}</td><td class="ink2">${esc(e.message)}</td></tr>`).join('');
   $('#watch-status').innerHTML = (BROWSER ? w.folder : watch_folder)
     ? `<p class="ink2">${w.error ? `<span style="color:var(--critical-text)">${esc(w.error)}</span>` : `Last scan: ${esc(w.last_scan || 'pending')} · ${int(w.files_seen)} files checked`}</p>
@@ -1622,7 +1658,19 @@ async function poll() {
     if (current === 'settings') renderShareCard();
   });
   await show(location.hash.slice(1) || 'overview', true);
-  sync.load().catch((e) => toast(`Shared database: ${e.message}`, true));
+  sync.load().catch((e) => toast(`Shared database: ${e.message}`, true)).finally(() => {
+    // The Google Drive folder watch of this browser, if any.
+    initDriveWatch({
+      api,
+      imported: async () => {
+        const ev = driveWatch.events[0];
+        if (ev) toast(`Google Drive: ${ev.file}: ${ev.message}`, !ev.accepted);
+        await refresh();
+      },
+    }, driveClientId());
+    // Its status follows each check.
+    setInterval(() => { if (current === 'settings') renderDriveWatch(); }, 5000);
+  });
   setInterval(poll, 15000);
   if (window.TRACKER_TOP_BUILD) {
     checkForUpdate();

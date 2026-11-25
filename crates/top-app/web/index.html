@@ -287,6 +287,17 @@
           <small>Every new CSV / TXT / Excel file in this folder (or its subfolders) is imported as a survey report, then the trackers it touches are re-optimised. Empty: off.</small>
         </label>
         <div id="watch-status" style="margin-top:12px"></div>
+        <div class="drive-watch">
+          <div class="sub-head"><h3>Google Drive folder (online)</h3></div>
+          <p class="ink2">Paste the link of a Google Drive folder: while this page is open, every new survey file in it (CSV / TXT / Excel, or a Google Sheet) is imported, checked every minute. Nothing to install: the page signs in with Google (as for the shared database on Google Drive online).</p>
+          <div class="drive-watch-row">
+            <input type="text" id="dwatch-link" placeholder="https://drive.google.com/drive/folders/…" aria-label="Link of the Google Drive folder">
+            <button type="button" class="btn" id="dwatch-start">Watch this folder</button>
+            <button type="button" class="btn primary" id="dwatch-resume" hidden>Sign in again</button>
+            <button type="button" class="btn" id="dwatch-stop" hidden>Stop watching</button>
+          </div>
+          <div id="dwatch-status" style="margin-top:10px"></div>
+        </div>
       </div>
       <div class="card" data-group="outputs">
         <div class="card-head"><h2>Installers' files</h2><span class="tag">in the shared folder</span></div>
